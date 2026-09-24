@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1
+
+- Repository moved to github.com/cmtymeet/cphn; package metadata points there.
+- Released from CI through crates.io trusted publishing.
+
 ## 0.1.0 — initial scaffold
 
 - Price-ordered cascade (WhatsApp, flash-call, SMS), E.164 normalize,
