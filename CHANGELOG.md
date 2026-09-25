@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Repository transferred to github.com/corbet-foss/cphn (old cmtymeet URLs redirect); package metadata points there.
+
 ## 0.1.1
 
 - Repository moved to github.com/cmtymeet/cphn; package metadata points there.

@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.88"
 description = "Price-ordered phone verification cascade with opaque dedup and cvld attester binding"
 license = "LGPL-3.0-only WITH LGPL-3.0-linking-exception"
-repository = "https://github.com/cmtymeet/cphn"
+repository = "https://github.com/corbet-foss/cphn"
 readme = "README.md"
 include = ["Cargo.toml", "src/**", "README.md", "CHANGELOG.md", "LICENSE", "LICENSE.md", "LICENSES/LGPL-3.0-only.txt", "LICENSES/LGPL-3.0-linking-exception.txt", "LICENSES/GPL-3.0-only.txt"]
 
