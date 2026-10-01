@@ -4,10 +4,10 @@ Write all code comments and documentation in English.
 
 ## Product boundary
 
-- cphn is a reusable phone-verification cascade: cheapest transport first
-  (WhatsApp auth, flash-call, SMS), with explicit user decline handling.
-  The library defines ordering, OTP state and opaque dedup; the host
-  application owns provider keys, message sending and raw phone handling.
+- cphn performs one phone-possession check through one selected provider/channel.
+  It owns normalization, OTP state, keyed fingerprinting and attestation binding.
+  Ordering, fallback and minimum standards belong to cfbk, configured by crbk.
+  No provider order, cost policy, retries or accepting production stubs here.
 - Raw phone numbers must never enter logs, errors, test fixtures or
   attestation output. Store only HMAC(server_secret, community | E.164)
   for dedup. Deleting raw after verification is hygiene, not blindness:
@@ -27,5 +27,5 @@ Write all code comments and documentation in English.
 - `cargo fmt --check`, `cargo clippy --all-targets` (no warnings),
   `cargo test` — all green before every commit. No local workstation
   builds per task status; use GHA, Crow fallback while GHA is down.
-- Validate cascade ordering, constant-time code verify, uniform errors,
+- Validate one provider call, constant-time code verification, uniform errors,
   expiry, rate-limit hooks and HMAC domain separation with fixtures.

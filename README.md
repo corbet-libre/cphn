@@ -1,14 +1,26 @@
 # cphn
 
-**Price-ordered phone verification cascade with opaque dedup.**
+**One phone possession check through one selected provider and channel.**
 
-`cphn` defines ordering and verification state for phone possession checks.
-The host supplies transports (WhatsApp, flash-call, SMS via Bird or equivalent)
-and owns provider keys and raw handling. No live calls from the library.
+## Scope
 
-```rust
-use cphn::{CascadePolicy, Channel, normalize_e164};
-```
+`cphn` normalizes E.164 input, sends one host-generated code through a provider
+port, checks possession, derives a community-scoped keyed fingerprint and binds
+an attestation payload. The host supplies provider credentials, a CSPRNG, clock
+and verification limits. Only a code hash remains in pending state. Phone
+possession is not evidence that a person is unique.
+
+Provider/channel ordering, fallback and minimum standards belong to `cfbk`,
+configured through `crbk` settings. This leaf has no ordering, cost estimates,
+provider probing or retry loop. Each `begin` sends at most once; provider refusal
+or uncertain delivery is returned unchanged. A successful code check consumes
+its attempt budget, so replay cannot succeed.
+
+`VerificationLimits` contains only explicit validity and submission bounds; it
+has no policy defaults. `ChannelSender` represents the one provider selected by
+the caller. The host must sign attestation bytes only after a successful check
+and must bind the normalized phone's fingerprint to that check. No live provider
+integration is supplied or certified here. See [the contract](docs/CONTRACT.md).
 
 ## License
 
