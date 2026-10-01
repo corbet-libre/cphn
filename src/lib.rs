@@ -1,53 +1,39 @@
-//! Price-ordered phone verification cascade with opaque dedup.
+//! Single-provider phone possession verification with an opaque fingerprint.
 //!
-//! The host implements [`ChannelSender`] for each transport (WhatsApp auth,
-//! flash-call, SMS). The library owns ordering, OTP state, constant-time
-//! verification, uniform errors and HMAC dedup. Raw phones never enter logs
-//! or attestation output.
+//! The caller selects one provider and channel through Fallback (`cfbk`) using
+//! Rulebook (`crbk`) settings. This leaf normalizes a phone, sends one code through
+//! [`ChannelSender`], verifies the reply and prepares an attestation binding.
+//! It neither orders providers nor retries or changes the selected channel.
 
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
 
-/// Transport channel, ordered cheapest first by [`CascadePolicy`].
+/// Transport channel selected by the caller for one verification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Channel {
-    /// WhatsApp authentication template. Cheapest in EU, needs app installed.
+    /// WhatsApp authentication template.
     Whatsapp,
     /// Missed-call CLI is the code. Android auto-read, iOS/web manual.
     FlashCall,
-    /// Raw SMS fallback. Universal coverage, highest EU per-message cost.
+    /// SMS message.
     Sms,
 }
 
-/// Host-implemented transport. The library never holds provider keys.
+/// One host-selected provider. The library never holds provider credentials.
 pub trait ChannelSender {
-    /// Send a code out-of-band. Returns provider message id for accounting.
-    /// Must not log the destination phone.
-    fn send(&self, channel: Channel, e164: &str, code: &str) -> Result<String, Error>;
-    /// Estimated cost in USD cents per segment for a destination country.
-    fn cost_cents(&self, channel: Channel, country: &str) -> Option<u32>;
+    /// Send one code out of band, without logging the destination or code.
+    /// A refusal or uncertain transport outcome is returned without another send.
+    fn send(&self, channel: Channel, e164: &str, code: &str) -> Result<(), Error>;
 }
 
-/// Ordered cascade policy. Explicit user decline stops, failure falls through.
-#[derive(Debug, Clone)]
-pub struct CascadePolicy {
-    /// Ordered cheapest first, e.g. [Whatsapp, FlashCall, Sms].
-    pub order: Vec<Channel>,
-    /// Code validity seconds, e.g. 300-600.
+/// Caller-supplied bounds for one possession check, without policy defaults.
+#[derive(Debug, Clone, Copy)]
+pub struct VerificationLimits {
+    /// Nonzero validity in seconds, supplied by authenticated host settings.
     pub code_lifetime_secs: u64,
-    /// Maximum attempts per code before invalidation.
+    /// Nonzero maximum submissions before the code is invalidated.
     pub max_attempts: u32,
-}
-
-impl Default for CascadePolicy {
-    fn default() -> Self {
-        Self {
-            order: vec![Channel::Whatsapp, Channel::FlashCall, Channel::Sms],
-            code_lifetime_secs: 300,
-            max_attempts: 3,
-        }
-    }
 }
 
 /// Normalize to E.164: leading `+`, 7-15 digits. Returns canonical form.
@@ -102,25 +88,29 @@ pub enum Error {
     /// Code expired or attempts exhausted. Uniform to avoid enumeration.
     #[error("verification rejected")]
     Rejected,
-    /// Explicit user decline of a channel. Caller stops cascade.
+    /// Explicit user decline of the selected channel.
     #[error("declined")]
     Declined,
-    /// Transport failure. Caller may fall through to next channel.
+    /// Selected provider unavailable or delivery outcome uncertain.
     #[error("transport unavailable")]
     Transport,
 }
 
-/// Start a verification: normalize the phone, hash the host-generated code.
-/// Only the hash is kept in the returned [`Pending`]; the host sends the code itself.
+/// Normalize and validate before sending once through the selected provider.
+/// Only the hash is kept in the returned [`Pending`]. The host generates the code
+/// with its CSPRNG and supplies one provider/channel already selected by `cfbk`.
+/// A provider error produces no pending check and never triggers a retry.
 pub fn begin(
-    policy: &CascadePolicy,
+    sender: &impl ChannelSender,
+    limits: &VerificationLimits,
     e164: &str,
     channel: Channel,
     code: &str,
     now_secs: u64,
 ) -> Result<Pending, Error> {
-    if normalize_e164(e164).is_none() {
-        return Err(Error::InvalidPhone);
+    let e164 = normalize_e164(e164).ok_or(Error::InvalidPhone)?;
+    if limits.code_lifetime_secs == 0 || limits.max_attempts == 0 {
+        return Err(Error::Rejected);
     }
     if code.len() < 4 || code.len() > 10 || !code.bytes().all(|b| b.is_ascii_digit()) {
         return Err(Error::Rejected);
@@ -132,10 +122,11 @@ pub fn begin(
         h.update(code.as_bytes());
         h.finalize().into()
     };
+    sender.send(channel, &e164, code)?;
     Ok(Pending {
         code_hash: digest,
-        expires_at: now_secs.saturating_add(policy.code_lifetime_secs),
-        attempts_left: policy.max_attempts,
+        expires_at: now_secs.saturating_add(limits.code_lifetime_secs),
+        attempts_left: limits.max_attempts,
         channel,
     })
 }
@@ -154,6 +145,7 @@ pub fn check(pending: &mut Pending, code: &str, now_secs: u64) -> Result<(), Err
         h.finalize()
     };
     if bool::from(pending.code_hash.as_slice().ct_eq(&digest[..])) {
+        pending.attempts_left = 0;
         Ok(())
     } else {
         Err(Error::Rejected)
