@@ -7,6 +7,7 @@
 
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
+use subtle::ConstantTimeEq;
 
 /// Transport channel, ordered cheapest first by [`CascadePolicy`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -151,11 +152,7 @@ pub fn check(pending: &mut Pending, code: &str, now_secs: u64) -> Result<(), Err
         h.update(code.as_bytes());
         h.finalize()
     };
-    let mut diff = 0u8;
-    for (a, b) in pending.code_hash.iter().zip(digest.iter()) {
-        diff |= a ^ b;
-    }
-    if diff == 0 {
+    if bool::from(pending.code_hash.as_slice().ct_eq(&digest[..])) {
         Ok(())
     } else {
         Err(Error::Rejected)
@@ -176,47 +173,4 @@ pub fn attestation_bytes(dedup: &str, policy_digest: &str, valid_until: u64) -> 
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::HashMap;
-
-    #[test]
-    fn e164_normalize() {
-        assert_eq!(
-            normalize_e164("+1 555 555 0100"),
-            Some("+15555550100".to_owned())
-        );
-        assert_eq!(normalize_e164("49170"), None);
-        assert_eq!(normalize_e164("+49"), None);
-    }
-
-    #[test]
-    fn dedup_is_community_scoped() {
-        let a = dedup_handle(b"s", "alpha", "+15555550100");
-        let b = dedup_handle(b"s", "beta", "+15555550100");
-        assert_ne!(a, b);
-        assert_eq!(a.len(), 64);
-    }
-
-    #[test]
-    fn otp_roundtrip_and_expiry() {
-        let policy = CascadePolicy::default();
-        let mut p = begin(&policy, "+15555550100", Channel::Sms, "482916", 1000).expect("begin");
-        assert!(check(&mut p, "482916", 1001).is_ok());
-        let mut q = begin(&policy, "+15555550100", Channel::Sms, "111111", 1000).expect("begin");
-        assert_eq!(check(&mut q, "000000", 1001), Err(Error::Rejected));
-        assert_eq!(check(&mut q, "111111", 2000), Err(Error::Rejected));
-    }
-
-    #[test]
-    fn cascade_default_order_is_cheapest_first() {
-        let order: HashMap<Channel, usize> = CascadePolicy::default()
-            .order
-            .iter()
-            .enumerate()
-            .map(|(i, c)| (*c, i))
-            .collect();
-        assert!(order[&Channel::Whatsapp] < order[&Channel::FlashCall]);
-        assert!(order[&Channel::FlashCall] < order[&Channel::Sms]);
-    }
-}
+mod tests;
