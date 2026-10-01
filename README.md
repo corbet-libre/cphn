@@ -33,7 +33,12 @@ The code-hash comparison delegates to the existing ecosystem's
 [`subtle` 2.6 ConstantTimeEq](https://docs.rs/subtle/latest/subtle/trait.ConstantTimeEq.html)
 (BSD-3-Clause), replacing the historical handwritten XOR loop. Both compared
 inputs are fixed 32-byte digests. `constant_time_eq` was also considered; `subtle`
-already fits the HMAC dependency family and avoids a separate primitive package.
+provides the established fixed-length slice API needed here.
 The crate implements no equality primitive. Upstream documents its constant-time
 behavior as best effort on the deployed compiler/hardware; functional native
 and wasm tests do not establish a timing proof.
+
+The HMAC constructor names upstream `digest::KeyInit` explicitly, as required
+by the maintained HMAC0.13/SHA2 0.11 API. An independently derived fixed HMAC
+vector runs natively and on wasm to preserve existing deduplication identities
+across dependency updates; no domain prefix or input encoding changed.

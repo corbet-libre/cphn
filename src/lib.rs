@@ -65,7 +65,8 @@ pub fn normalize_e164(input: &str) -> Option<String> {
 /// Pass E.164 from [`normalize_e164`]; other forms of one number yield other handles.
 #[must_use]
 pub fn dedup_handle(server_secret: &[u8], community_id: &str, e164: &str) -> String {
-    let mut mac = Hmac::<Sha256>::new_from_slice(server_secret).expect("secret accepts any length");
+    let mut mac = <Hmac<Sha256> as hmac::digest::KeyInit>::new_from_slice(server_secret)
+        .expect("secret accepts any length");
     mac.update(b"cphn.dedup.v1\n");
     mac.update(community_id.as_bytes());
     mac.update(b"\n");

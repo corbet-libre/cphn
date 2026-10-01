@@ -108,3 +108,12 @@ fn canonical_phone_and_public_attestation_boundaries() {
         assert!(!error.to_string().is_empty());
     }
 }
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+fn fixed_dedup_vector_survives_crypto_dependency_updates() {
+    assert_eq!(
+        dedup_handle(b"fixture-secret", "fixture", "+15555550100"),
+        "4456eb7087301dbb6035295daa3d398869b422083b3ff560846b3b3dce55815c"
+    );
+}
