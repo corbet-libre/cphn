@@ -28,6 +28,7 @@ pub struct Run {
 /// Each compatible option proves phone control; no cheapest-channel assumption is baked in.
 /// This convenience path never retries pending or uncertain effects. Preparing options is inert.
 pub async fn begin_with_fallback(
+    state: &impl DispatchState,
     attempts: Vec<Attempt>,
     transport: &impl Transport,
     order: cost::CostOrder,
@@ -80,12 +81,15 @@ pub async fn begin_with_fallback(
         };
         let index = *permit.candidate();
         let attempt = attempts[index].take().ok_or(Error::Configuration)?;
-        let result = attempt.prepared.dispatch(transport, permit, now).await;
+        let result = attempt
+            .prepared
+            .dispatch(state, transport, permit, now)
+            .await;
         let outcome = match &result {
             Ok(Step::Verified(_)) => cost::Outcome::Success,
             Ok(Step::Pending(_)) => cost::Outcome::Pending,
             Err(Error::NotDispatched) => cost::Outcome::SafeFailure,
-            Err(Error::Uncertain) => cost::Outcome::Uncertain,
+            Err(Error::Uncertain | Error::ProviderResponse { .. }) => cost::Outcome::Uncertain,
             _ => cost::Outcome::Refused,
         };
         cascade.complete(outcome, None).map_err(|_| Error::Budget)?;

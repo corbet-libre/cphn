@@ -17,6 +17,7 @@ pub use twilio::{Channel, Prepared, Twilio};
 use zeroize::Zeroizing;
 
 /// Private owned bytes: explicit access only; no automatic serialization or logging.
+#[derive(PartialEq, Eq)]
 pub struct Private(Zeroizing<Vec<u8>>);
 impl Private {
     /// Construct from caller-owned transient input or a trusted transport response.
@@ -52,11 +53,32 @@ pub enum Error {
     /// A provider effect may have happened; no automatic retry or fallback.
     #[error("verification outcome uncertain")]
     Uncertain,
+    /// Caller atomic operation or shared-budget reservation refused.
+    #[error("verification operation reservation refused")]
+    Reservation,
+    /// Non-success provider response. Side effects and billing may be uncertain.
+    #[error("verification provider returned a non-success response")]
+    ProviderResponse {
+        /// Actual HTTP status.
+        status: u16,
+        /// Exact bounded private response, never authenticated verification evidence.
+        response: Private,
+    },
     /// Cost authorization did not match this dispatch.
     #[error("verification cost authorization refused")]
     Budget,
 }
 
+impl Error {
+    /// Explicit complete upstream error bytes, when an HTTP failure was received.
+    /// These are provider assertions, not verified domain facts.
+    pub fn upstream(&self) -> Option<&Private> {
+        match self {
+            Self::ProviderResponse { response, .. } => Some(response),
+            _ => None,
+        }
+    }
+}
 /// Trusted host transport boundary. Implementations authenticate HTTPS, bound response size,
 /// disable redirects/retries/logging, and return `NotDispatched` only with definite evidence.
 /// A member-controlled transport is not a verifier. Fixture transports are test-only.
@@ -70,10 +92,29 @@ pub trait Transport {
     ) -> impl std::future::Future<Output = Result<http::Response<Private>, Error>>;
 }
 
+/// Caller-owned atomic dispatch and shared-budget reservation. Implementations
+/// must reject already dispatched operation IDs and conflicting terms, including
+/// retries after uncertainty or a process restart. Preserve maximum exposure
+/// until independently reconciled. No raw payloads are supplied or persisted here.
+/// A failed reservation must leave no side effect and cannot authorize fallback.
+pub trait DispatchState {
+    /// Atomically bind operation to ceremony/request and reserve its maximum
+    /// against the host's shared ceremony budget. Only a new reservation succeeds.
+    fn reserve(
+        &self,
+        ceremony: &[u8; 32],
+        operation: &[u8; 32],
+        binding: &str,
+        maximum: &cost::Amount,
+    ) -> Result<(), Error>;
+}
+
 /// Trusted caller context for one verification; all fields stay in memory.
 pub struct Context {
     /// Opaque subject/action/operation binding, chosen before starting the provider session.
     pub binding: [u8; 32],
+    /// Unique caller operation ID for this dispatch; distinct from the ceremony.
+    pub operation: [u8; 32],
     /// Comparison scope; no hard-coded community or lifetime semantics.
     pub scope: Vec<u8>,
     /// Stable identity key, separate from provider credentials; zeroized on drop.

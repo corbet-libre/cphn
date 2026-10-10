@@ -79,13 +79,20 @@ impl Twilio {
         self.prepare(pending, None, now)
     }
     /// Prepare one check for this exact RAM-held session; never accepts an arbitrary SID.
-    pub fn prepare_check(&self, pending: Pending, code: &str, now: u64) -> Result<Prepared, Error> {
+    pub fn prepare_check(
+        &self,
+        mut pending: Pending,
+        code: &str,
+        operation: [u8; 32],
+        now: u64,
+    ) -> Result<Prepared, Error> {
         if !(4..=10).contains(&code.len())
             || !code.bytes().all(|b| b.is_ascii_digit())
             || !sid(&pending.sid, "VE")
         {
             return Err(Error::Input);
         }
+        pending.context.operation = operation;
         self.prepare(pending, Some(code), now)
     }
     fn prepare(&self, pending: Pending, code: Option<&str>, now: u64) -> Result<Prepared, Error> {
@@ -132,6 +139,7 @@ impl Twilio {
             "production",
             pending.channel.as_str(),
             pending.context.binding,
+            pending.context.operation,
             pending.context.expires_at,
             pending.context.include_upstream,
             request.body().expose(),
@@ -172,6 +180,7 @@ impl Prepared {
     /// Make one request only after validating the cost permit and real transport mode.
     pub async fn dispatch(
         self,
+        state: &impl DispatchState,
         transport: &impl Transport,
         permit: cost::DispatchPermit<usize>,
         now: u64,
@@ -182,9 +191,23 @@ impl Prepared {
         if transport.mode() != cost::Mode::Production || now >= self.pending.context.expires_at {
             return Err(Error::Configuration);
         }
+        state
+            .reserve(
+                &self.pending.context.binding,
+                &self.pending.context.operation,
+                &self.binding,
+                permit.quote().price.maximum().ok_or(Error::Budget)?,
+            )
+            .map_err(|_| Error::Reservation)?;
         let response = transport.send(self.request).await?;
-        if !response.status().is_success() || response.body().expose().len() > 65536 {
+        if response.body().expose().len() > 65536 {
             return Err(Error::Uncertain);
+        }
+        if !response.status().is_success() {
+            return Err(Error::ProviderResponse {
+                status: response.status().as_u16(),
+                response: response.into_body(),
+            });
         }
         let decoded: Reply =
             serde_json::from_slice(response.body().expose()).map_err(|_| Error::Uncertain)?;

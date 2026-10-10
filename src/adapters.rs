@@ -19,7 +19,7 @@ pub struct AdapterEvidence {
 pub trait Adapter {
     /// The provider's transient input/proof/session reference type.
     type Input;
-    /// Opaque request binding covering account, mode, operation, context and all relevant input.
+    /// Opaque request binding covering account, mode, context.operation, context and all relevant input.
     /// Use a keyed transform for low-entropy/private terms; never return raw input.
     fn binding(&self, input: &Self::Input, context: &Context) -> Result<String, Error>;
     /// Actual credential/endpoint mode. Simulation cannot produce production evidence.
@@ -37,6 +37,7 @@ pub trait Adapter {
 /// Authenticate an extension adapter and enforce the common privacy/identity transformation.
 /// Network adapters need caller-authorized bounded costs; this function never discovers prices.
 pub async fn verify_with<A: Adapter>(
+    state: &impl DispatchState,
     adapter: &A,
     input: A::Input,
     context: Context,
@@ -53,6 +54,14 @@ pub async fn verify_with<A: Adapter>(
     permit
         .validate(&binding, adapter.mode(), now)
         .map_err(|_| Error::Budget)?;
+    state
+        .reserve(
+            &context.binding,
+            &context.operation,
+            &binding,
+            permit.quote().price.maximum().ok_or(Error::Budget)?,
+        )
+        .map_err(|_| Error::Reservation)?;
     let evidence = adapter.authenticate(input, &context, permit, now).await?;
     project(evidence, context, now)
 }

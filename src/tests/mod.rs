@@ -29,6 +29,7 @@ fn adapter() -> Twilio {
 fn context() -> Context {
     Context {
         binding: [1; 32],
+        operation: [3; 32],
         scope: b"scope".to_vec(),
         identity_key: zeroize::Zeroizing::new([2; 32]),
         expires_at: 300,
@@ -110,6 +111,7 @@ fn pending(rich: bool) -> Pending {
     let p = adapter().prepare_begin(DEST, CHANNEL, c, 100).unwrap();
     let permit = get_permit(&p, cost::Mode::Production, 200);
     match block_on(p.dispatch(
+        &Journal::default(),
         &Wire::new(vec![Ok(response(reply("pending")))]),
         permit,
         100,
@@ -122,10 +124,11 @@ fn pending(rich: bool) -> Pending {
 }
 fn verified(rich: bool) -> Verified {
     let p = adapter()
-        .prepare_check(pending(rich), "123456", 101)
+        .prepare_check(pending(rich), "123456", [4; 32], 101)
         .unwrap();
     let permit = get_permit(&p, cost::Mode::Production, 200);
     match block_on(p.dispatch(
+        &Journal::default(),
         &Wire::new(vec![Ok(response(reply("approved")))]),
         permit,
         101,
@@ -143,7 +146,7 @@ fn actual_twilio_wire_is_correlated_and_only_requested_rich_data_survives() {
     let p = prepared();
     let permit = get_permit(&p, cost::Mode::Production, 200);
     let wire = Wire::new(vec![Ok(response(reply("pending")))]);
-    let step = block_on(p.dispatch(&wire, permit, 100)).unwrap();
+    let step = block_on(p.dispatch(&Journal::default(), &wire, permit, 100)).unwrap();
     let Step::Pending(pending) = step else {
         panic!("pending")
     };
@@ -159,10 +162,13 @@ fn actual_twilio_wire_is_correlated_and_only_requested_rich_data_survives() {
         .collect();
     assert_eq!(form["To"], DEST);
     assert_eq!(form["Channel"], CHANNEL.as_str());
-    let p = adapter().prepare_check(pending, "123456", 101).unwrap();
+    let p = adapter()
+        .prepare_check(pending, "123456", [4; 32], 101)
+        .unwrap();
     let permit = get_permit(&p, cost::Mode::Production, 200);
     let wire = Wire::new(vec![Ok(response(reply("approved")))]);
-    let Step::Verified(v) = block_on(p.dispatch(&wire, permit, 101)).unwrap() else {
+    let Step::Verified(v) = block_on(p.dispatch(&Journal::default(), &wire, permit, 101)).unwrap()
+    else {
         panic!("verified")
     };
     assert!(
@@ -207,11 +213,17 @@ fn authentication_response_and_session_mismatches_never_create_a_fact() {
         let mut r = reply("approved");
         r[field] = value;
         let p = adapter()
-            .prepare_check(pending(false), "123456", 101)
+            .prepare_check(pending(false), "123456", [4; 32], 101)
             .unwrap();
         let permit = get_permit(&p, cost::Mode::Production, 200);
         assert_eq!(
-            block_on(p.dispatch(&Wire::new(vec![Ok(response(r))]), permit, 101)).unwrap_err(),
+            block_on(p.dispatch(
+                &Journal::default(),
+                &Wire::new(vec![Ok(response(r))]),
+                permit,
+                101
+            ))
+            .unwrap_err(),
             Error::Refused
         );
     }
@@ -219,6 +231,7 @@ fn authentication_response_and_session_mismatches_never_create_a_fact() {
     let permit = get_permit(&p, cost::Mode::Production, 200);
     assert_eq!(
         block_on(p.dispatch(
+            &Journal::default(),
             &Wire::new(vec![Ok(response(reply("approved")))]),
             permit,
             101
@@ -227,11 +240,12 @@ fn authentication_response_and_session_mismatches_never_create_a_fact() {
         Error::Refused
     );
     let p = adapter()
-        .prepare_check(pending(false), "123456", 101)
+        .prepare_check(pending(false), "123456", [4; 32], 101)
         .unwrap();
     let permit = get_permit(&p, cost::Mode::Production, 200);
     assert!(matches!(
         block_on(p.dispatch(
+            &Journal::default(),
             &Wire::new(vec![Ok(response(reply("pending")))]),
             permit,
             101
@@ -256,7 +270,7 @@ fn malformed_responses_and_possible_effects_fail_closed_without_retry() {
         let p = prepared();
         let permit = get_permit(&p, cost::Mode::Production, 200);
         let wire = Wire::new(vec![result]);
-        assert!(block_on(p.dispatch(&wire, permit, 101)).is_err());
+        assert!(block_on(p.dispatch(&Journal::default(), &wire, permit, 101)).is_err());
         assert_eq!(wire.requests.borrow().len(), 1);
     }
 }
@@ -325,7 +339,11 @@ fn credentials_inputs_scope_time_and_modes_are_validated_before_transport() {
             .is_err()
     );
     for code in ["123", "12345678901", "123x"] {
-        assert!(adapter().prepare_check(pending(false), code, 101).is_err());
+        assert!(
+            adapter()
+                .prepare_check(pending(false), code, [4; 32], 101)
+                .is_err()
+        );
     }
     let other = Twilio::new(
         format!("AC{}", "1".repeat(32)),
@@ -334,7 +352,11 @@ fn credentials_inputs_scope_time_and_modes_are_validated_before_transport() {
         cost::Mode::Production,
     )
     .unwrap();
-    assert!(other.prepare_check(pending(false), "123456", 101).is_err());
+    assert!(
+        other
+            .prepare_check(pending(false), "123456", [4; 32], 101)
+            .is_err()
+    );
     let other = Twilio::new(
         account(),
         format!("VA{}", "1".repeat(32)),
@@ -342,13 +364,17 @@ fn credentials_inputs_scope_time_and_modes_are_validated_before_transport() {
         cost::Mode::Production,
     )
     .unwrap();
-    assert!(other.prepare_check(pending(false), "123456", 101).is_err());
+    assert!(
+        other
+            .prepare_check(pending(false), "123456", [4; 32], 101)
+            .is_err()
+    );
     for mode in [cost::Mode::Simulation, cost::Mode::Sandbox] {
         let p = prepared();
         let permit = get_permit(&p, mode, 200);
         let wire = Wire::new(vec![]);
         assert_eq!(
-            block_on(p.dispatch(&wire, permit, 101)).unwrap_err(),
+            block_on(p.dispatch(&Journal::default(), &wire, permit, 101)).unwrap_err(),
             Error::Budget
         );
         assert!(wire.requests.borrow().is_empty());
@@ -357,7 +383,7 @@ fn credentials_inputs_scope_time_and_modes_are_validated_before_transport() {
         let mut wire = Wire::new(vec![]);
         wire.mode = mode;
         assert_eq!(
-            block_on(p.dispatch(&wire, permit, 101)).unwrap_err(),
+            block_on(p.dispatch(&Journal::default(), &wire, permit, 101)).unwrap_err(),
             Error::Configuration
         );
     }
@@ -368,7 +394,9 @@ fn credentials_inputs_scope_time_and_modes_are_validated_before_transport() {
             cost::Mode::Production,
             if expired == 200 { 200 } else { 400 },
         );
-        assert!(block_on(p.dispatch(&Wire::new(vec![]), permit, expired)).is_err());
+        assert!(
+            block_on(p.dispatch(&Journal::default(), &Wire::new(vec![]), permit, expired)).is_err()
+        );
     }
     let p = prepared();
     let wrong = adapter()
@@ -384,7 +412,7 @@ fn credentials_inputs_scope_time_and_modes_are_validated_before_transport() {
         .unwrap();
     let permit = get_permit(&wrong, cost::Mode::Production, 200);
     assert_eq!(
-        block_on(p.dispatch(&Wire::new(vec![]), permit, 101)).unwrap_err(),
+        block_on(p.dispatch(&Journal::default(), &Wire::new(vec![]), permit, 101)).unwrap_err(),
         Error::Budget
     );
     for error in [
@@ -401,7 +429,17 @@ fn credentials_inputs_scope_time_and_modes_are_validated_before_transport() {
 
 fn attempt(amount: u64) -> Attempt {
     Attempt {
-        prepared: prepared(),
+        prepared: adapter()
+            .prepare_begin(
+                DEST,
+                CHANNEL,
+                Context {
+                    operation: [u8::try_from(amount).unwrap(); 32],
+                    ..context()
+                },
+                100,
+            )
+            .unwrap(),
         price: cost::Price::AtMost(money(amount)),
         source: "fixture-tariff".into(),
         quote_valid_until: 200,
@@ -415,6 +453,7 @@ fn configured_and_cost_order_cascades_reserve_failed_costs_and_stop_on_pending()
         Ok(response(reply("pending"))),
     ]);
     let run = block_on(begin_with_fallback(
+        &Journal::default(),
         vec![attempt(10), attempt(20)],
         &wire,
         cost::CostOrder::Configured,
@@ -427,6 +466,7 @@ fn configured_and_cost_order_cascades_reserve_failed_costs_and_stop_on_pending()
     assert_eq!(run.attempts, 2);
     assert_eq!(run.exposure.atoms, 30);
     let run = block_on(begin_with_fallback(
+        &Journal::default(),
         vec![attempt(20), attempt(10)],
         &Wire::new(vec![Ok(response(reply("pending")))]),
         cost::CostOrder::Cheapest,
@@ -440,6 +480,7 @@ fn configured_and_cost_order_cascades_reserve_failed_costs_and_stop_on_pending()
     assert!(format!("{run:?}").contains("Run"));
     for e in [Error::Uncertain, Error::Refused] {
         let run = block_on(begin_with_fallback(
+            &Journal::default(),
             vec![attempt(10), attempt(20)],
             &Wire::new(vec![Err(e)]),
             cost::CostOrder::Configured,
@@ -452,6 +493,7 @@ fn configured_and_cost_order_cascades_reserve_failed_costs_and_stop_on_pending()
         assert_eq!(run.exposure.atoms, 10);
     }
     let run = block_on(begin_with_fallback(
+        &Journal::default(),
         vec![attempt(10)],
         &Wire::new(vec![Err(Error::NotDispatched)]),
         cost::CostOrder::Configured,
@@ -465,6 +507,7 @@ fn configured_and_cost_order_cascades_reserve_failed_costs_and_stop_on_pending()
     unknown.price = cost::Price::Unknown;
     assert!(
         block_on(begin_with_fallback(
+            &Journal::default(),
             vec![unknown],
             &Wire::new(vec![]),
             cost::CostOrder::Configured,
@@ -475,9 +518,10 @@ fn configured_and_cost_order_cascades_reserve_failed_costs_and_stop_on_pending()
         .is_err()
     );
     let checked = adapter()
-        .prepare_check(pending(false), "123456", 101)
+        .prepare_check(pending(false), "123456", [4; 32], 101)
         .unwrap();
     let run = block_on(begin_with_fallback(
+        &Journal::default(),
         vec![Attempt {
             prepared: checked,
             ..attempt(10)
@@ -579,7 +623,12 @@ fn maintained_phone_metadata_and_all_channels_are_exercised() {
         let mut r = reply("pending");
         r["channel"] = serde_json::json!(wire);
         assert!(matches!(
-            block_on(p.dispatch(&Wire::new(vec![Ok(response(r))]), permit, 101)),
+            block_on(p.dispatch(
+                &Journal::default(),
+                &Wire::new(vec![Ok(response(r))]),
+                permit,
+                101
+            )),
             Ok(Step::Pending(_))
         ));
     }
@@ -693,7 +742,7 @@ fn concurrent_registration_calls_use_the_atomic_host_port() {
 fn malformed_private_session_and_wrong_sid_prefix_are_refused() {
     let mut p = pending(false);
     p.sid = "invalid".into();
-    assert!(adapter().prepare_check(p, "123456", 101).is_err());
+    assert!(adapter().prepare_check(p, "123456", [4; 32], 101).is_err());
     assert!(
         Twilio::new(
             format!("XX{}", "0".repeat(32)),
@@ -756,7 +805,15 @@ fn open_adapter_port_projects_only_authenticated_scoped_requested_data() {
         };
         let mut c = context();
         c.include_upstream = rich;
-        let verified = block_on(verify_with(&extension, (), c, permit, 101)).unwrap();
+        let verified = block_on(verify_with(
+            &Journal::default(),
+            &extension,
+            (),
+            c,
+            permit,
+            101,
+        ))
+        .unwrap();
         assert_eq!(verified.expires_at(), 250);
         assert_eq!(verified.upstream().is_some(), rich);
         assert_eq!(verified.identity(), self::verified(false).identity());
@@ -782,7 +839,17 @@ fn open_adapter_port_projects_only_authenticated_scoped_requested_data() {
             result: RefCell::new(Some(result)),
             binding: Ok(p.binding().into()),
         };
-        assert!(block_on(verify_with(&extension, (), context(), permit, 101)).is_err());
+        assert!(
+            block_on(verify_with(
+                &Journal::default(),
+                &extension,
+                (),
+                context(),
+                permit,
+                101
+            ))
+            .is_err()
+        );
     }
     for case in 0..5 {
         let p = prepared();
@@ -800,7 +867,17 @@ fn open_adapter_port_projects_only_authenticated_scoped_requested_data() {
             3 => extension.binding = Ok("wrong".into()),
             _ => extension.binding = Err(Error::Configuration),
         }
-        assert!(block_on(verify_with(&extension, (), c, permit, 101)).is_err());
+        assert!(
+            block_on(verify_with(
+                &Journal::default(),
+                &extension,
+                (),
+                c,
+                permit,
+                101
+            ))
+            .is_err()
+        );
     }
     for case in 0..2 {
         let mut c = context();
@@ -812,4 +889,159 @@ fn open_adapter_port_projects_only_authenticated_scoped_requested_data() {
         assert!(adapters::project(evidence(), c, 101).is_err());
     }
     assert!(!format!("{:?}", evidence()).contains(DEST));
+}
+
+type DispatchRecords = HashMap<[u8; 32], ([u8; 32], String, cost::Amount)>;
+struct Journal {
+    inner: Mutex<(DispatchRecords, HashMap<[u8; 32], u64>)>,
+    limit: u64,
+}
+impl Default for Journal {
+    fn default() -> Self {
+        Self {
+            inner: Mutex::new((HashMap::new(), HashMap::new())),
+            limit: 100,
+        }
+    }
+}
+impl DispatchState for Journal {
+    fn reserve(
+        &self,
+        ceremony: &[u8; 32],
+        operation: &[u8; 32],
+        binding: &str,
+        maximum: &cost::Amount,
+    ) -> Result<(), Error> {
+        let mut state = self.inner.lock().unwrap();
+        if state.0.contains_key(operation) || maximum.unit != money(0).unit {
+            return Err(Error::Reservation);
+        }
+        let used = state.1.get(ceremony).copied().unwrap_or(0);
+        let total = used.checked_add(maximum.atoms).ok_or(Error::Reservation)?;
+        if total > self.limit {
+            return Err(Error::Reservation);
+        }
+        state
+            .0
+            .insert(*operation, (*ceremony, binding.into(), maximum.clone()));
+        state.1.insert(*ceremony, total);
+        Ok(())
+    }
+}
+#[test]
+fn host_dispatch_reservation_blocks_uncertain_retries_conflicting_terms_and_budget_reuse() {
+    let journal = Journal {
+        limit: 10,
+        ..Journal::default()
+    };
+    let p = prepared();
+    let permit = get_permit(&p, cost::Mode::Production, 200);
+    let wire = Wire::new(vec![Err(Error::Uncertain)]);
+    assert_eq!(
+        block_on(p.dispatch(&journal, &wire, permit, 101)).unwrap_err(),
+        Error::Uncertain
+    );
+    assert_eq!(wire.requests.borrow().len(), 1);
+    for changed in [false, true] {
+        let mut c = context();
+        if changed {
+            c.scope = b"changed terms".to_vec();
+        }
+        let p = adapter().prepare_begin(DEST, CHANNEL, c, 100).unwrap();
+        let permit = get_permit(&p, cost::Mode::Production, 200);
+        let wire = Wire::new(vec![]);
+        assert_eq!(
+            block_on(p.dispatch(&journal, &wire, permit, 101)).unwrap_err(),
+            Error::Reservation
+        );
+        assert!(wire.requests.borrow().is_empty());
+    }
+    let mut c = context();
+    c.operation = [9; 32];
+    let p = adapter().prepare_begin(DEST, CHANNEL, c, 100).unwrap();
+    let permit = get_permit(&p, cost::Mode::Production, 200);
+    let wire = Wire::new(vec![]);
+    assert_eq!(
+        block_on(p.dispatch(&journal, &wire, permit, 101)).unwrap_err(),
+        Error::Reservation
+    );
+    assert!(wire.requests.borrow().is_empty());
+    let state = journal.inner.lock().unwrap();
+    assert_eq!(state.0.len(), 1);
+    assert_eq!(state.1[&context().binding], 10);
+}
+#[test]
+fn concurrent_prepared_requests_acquire_only_one_dispatch_reservation() {
+    let journal = Journal::default();
+    let counts = std::thread::scope(|scope| {
+        let jobs = (0..4)
+            .map(|_| {
+                let journal = &journal;
+                scope.spawn(move || {
+                    let p = prepared();
+                    let permit = get_permit(&p, cost::Mode::Production, 200);
+                    let wire = Wire::new(vec![Ok(response(reply("pending")))]);
+                    let accepted = block_on(p.dispatch(journal, &wire, permit, 101)).is_ok();
+                    (usize::from(accepted), wire.requests.borrow().len())
+                })
+            })
+            .collect::<Vec<_>>();
+        jobs.into_iter()
+            .map(|job| job.join().unwrap())
+            .fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1))
+    });
+    assert_eq!(counts, (1, 1));
+}
+#[test]
+fn extension_cannot_dispatch_after_host_reservation_refusal() {
+    let journal = Journal {
+        limit: 0,
+        ..Journal::default()
+    };
+    let p = prepared();
+    let permit = get_permit(&p, cost::Mode::Production, 200);
+    let extension = Extension {
+        mode: cost::Mode::Production,
+        result: RefCell::new(Some(Ok(evidence()))),
+        binding: Ok(p.binding().into()),
+    };
+    assert_eq!(
+        block_on(verify_with(
+            &journal,
+            &extension,
+            (),
+            context(),
+            permit,
+            101
+        ))
+        .unwrap_err(),
+        Error::Reservation
+    );
+    assert!(extension.result.borrow().is_some());
+}
+
+#[test]
+fn upstream_http_failure_bytes_are_explicit_private_and_stop_fallback() {
+    let body = br#"{"code":20429,"message":"private-provider-detail","extension":42}"#;
+    let response = http::Response::builder()
+        .status(429)
+        .body(Private::new(body.to_vec()))
+        .unwrap();
+    let wire = Wire::new(vec![Ok(response)]);
+    let run = block_on(begin_with_fallback(
+        &Journal::default(),
+        vec![attempt(10), attempt(20)],
+        &wire,
+        cost::CostOrder::Configured,
+        money(30),
+        2,
+        100,
+    ))
+    .unwrap();
+    let error = run.result.unwrap_err();
+    assert_eq!(error.upstream().unwrap().expose(), body);
+    assert!(!format!("{error:?} {error}").contains("private-provider-detail"));
+    assert!(Error::Uncertain.upstream().is_none());
+    assert_eq!(wire.requests.borrow().len(), 1);
+    assert_eq!(run.exposure.atoms, 10);
 }
