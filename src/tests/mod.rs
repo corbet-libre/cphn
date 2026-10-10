@@ -584,3 +584,128 @@ fn maintained_phone_metadata_and_all_channels_are_exercised() {
         ));
     }
 }
+
+#[test]
+fn local_simulation_uses_real_planning_and_transformations_without_credentials_or_transport() {
+    fn offers() -> Vec<SimulationOffer> {
+        vec![
+            SimulationOffer {
+                channel: CHANNEL,
+                price: cost::Price::AtMost(money(10)),
+                source: "dummy-tariff".into(),
+                valid_until: 200,
+                outcome: cost::Outcome::SafeFailure,
+            },
+            SimulationOffer {
+                channel: CHANNEL,
+                price: cost::Price::AtMost(money(20)),
+                source: "dummy-tariff".into(),
+                valid_until: 200,
+                outcome: cost::Outcome::Success,
+            },
+        ]
+    }
+    fn settings() -> SimulationSettings {
+        SimulationSettings {
+            order: cost::CostOrder::Configured,
+            budget: money(30),
+            max_attempts: 2,
+            now: 100,
+        }
+    }
+    let result = simulate(DEST, b"scope", offers(), settings()).unwrap();
+    assert_eq!(result.attempts, 2);
+    assert_eq!(result.exposure.atoms, 30);
+    assert_eq!(result.outcome, cost::Outcome::Success);
+    let other = simulate(DEST, b"different-scope", offers(), settings()).unwrap();
+    assert_ne!(result.comparison, other.comparison);
+    assert!(format!("{result:?}").contains("Simulated"));
+    for outcome in [
+        cost::Outcome::Pending,
+        cost::Outcome::Uncertain,
+        cost::Outcome::Refused,
+    ] {
+        let mut values = offers();
+        values[0].outcome = outcome;
+        assert_eq!(
+            simulate(DEST, b"scope", values, settings())
+                .unwrap()
+                .attempts,
+            1
+        );
+    }
+    assert!(simulate("invalid", b"scope", offers(), settings()).is_err());
+    assert!(simulate(DEST, b"", offers(), settings()).is_err());
+    let mut unknown = offers();
+    unknown
+        .iter_mut()
+        .for_each(|o| o.price = cost::Price::Unknown);
+    assert!(simulate(DEST, b"scope", unknown, settings()).is_err());
+    let mut short = settings();
+    short.max_attempts = 1;
+    assert!(simulate(DEST, b"scope", offers(), short).is_err());
+    assert!(format!("{:?}", offers()).contains("SimulationOffer"));
+    assert!(format!("{:?}", settings()).contains("SimulationSettings"));
+}
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn concurrent_registration_calls_use_the_atomic_host_port() {
+    let verified = verified(false);
+    let state = State::default();
+    std::thread::scope(|scope| {
+        let tasks: Vec<_> = (0..6u8)
+            .map(|id| {
+                let v = &verified;
+                let s = &state;
+                scope.spawn(move || {
+                    v.reserve(
+                        s,
+                        Registration {
+                            id: &[id],
+                            window: b"window",
+                            limit: NonZeroU32::new(2).unwrap(),
+                        },
+                        101,
+                    )
+                    .unwrap()
+                })
+            })
+            .collect();
+        let results: Vec<_> = tasks.into_iter().map(|task| task.join().unwrap()).collect();
+        assert_eq!(
+            results
+                .iter()
+                .filter(|r| **r == Reservation::Reserved)
+                .count(),
+            2
+        );
+        assert_eq!(
+            results
+                .iter()
+                .filter(|r| **r == Reservation::LimitReached)
+                .count(),
+            4
+        );
+    });
+}
+
+#[test]
+fn malformed_private_session_and_wrong_sid_prefix_are_refused() {
+    let mut p = pending(false);
+    p.sid = "invalid".into();
+    assert!(adapter().prepare_check(p, "123456", 101).is_err());
+    assert!(
+        Twilio::new(
+            format!("XX{}", "0".repeat(32)),
+            service(),
+            Private::new(b"secret".to_vec()),
+            cost::Mode::Production
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn impossible_national_number_is_not_a_canonical_identity() {
+    assert!(normalize("+1202555").is_err());
+}

@@ -119,9 +119,9 @@ impl Twilio {
             .uri(url)
             .header("content-type", "application/x-www-form-urlencoded")
             .body(body)
-            .map_err(|_| Error::Configuration)?;
+            .expect("validated service SID and static HTTP request parts");
         let mut header =
-            http::HeaderValue::from_str(&authorization).map_err(|_| Error::Configuration)?;
+            http::HeaderValue::from_str(&authorization).expect("Basic base64 is a valid header");
         header.set_sensitive(true);
         request
             .headers_mut()
@@ -136,7 +136,7 @@ impl Twilio {
             pending.context.include_upstream,
             request.body().expose(),
         ))
-        .map_err(|_| Error::Configuration)?;
+        .expect("a tuple of strings, bytes and integers serializes");
         let digest = Identity::derive(
             &pending.context.identity_key,
             &pending.context.scope,

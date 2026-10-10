@@ -5,6 +5,8 @@
 
 mod flow;
 mod identity;
+mod simulation;
+pub use simulation::{Simulated, SimulationOffer, SimulationSettings, simulate};
 mod twilio;
 pub use cfbk::cost;
 pub use flow::{Attempt, Run, begin_with_fallback};
