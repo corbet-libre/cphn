@@ -93,7 +93,7 @@ pub async fn begin_with_fallback(
         let attempt = attempts[index].take().ok_or(Error::Configuration)?;
         let result = attempt
             .prepared
-            .dispatch_inner(state, transport, permit, clock, now, None)
+            .dispatch_inner(state, transport, permit, clock, &mut now, None)
             .await;
         let outcome = match &result {
             Ok(Step::Verified(_)) => cost::Outcome::Success,

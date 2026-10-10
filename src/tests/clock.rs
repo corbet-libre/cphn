@@ -391,3 +391,111 @@ fn synchronous_registration_checks_commit_and_completion_time() {
         );
     }
 }
+
+#[test]
+fn fallback_samples_failed_transport_time_and_preserves_earlier_observations() {
+    fn attempts() -> Vec<Attempt> {
+        (0..2)
+            .map(|id| {
+                let mut c = context();
+                c.operation = [id; 32];
+                Attempt {
+                    prepared: adapter().prepare_begin(DEST, CHANNEL, c, 100).unwrap(),
+                    price: cost::Price::AtMost(money(10)),
+                    source: "fixture".into(),
+                    quote_valid_until: 200,
+                }
+            })
+            .collect()
+    }
+    for provider_error in [false, true] {
+        let clock = Cell::new(100);
+        let state = WaitingState {
+            clock: &clock,
+            journal: Journal::default(),
+            advance: 150,
+        };
+        let error = if provider_error {
+            Error::ProviderResponse {
+                status: 429,
+                response: Private::new(b"private provider refusal".to_vec()),
+            }
+        } else {
+            Error::NotDispatched
+        };
+        let wire = WaitingWire {
+            clock: &clock,
+            wire: Wire::new(vec![Err(error)]),
+            completed: 120,
+        };
+        let run = block_on(begin_with_fallback(
+            &state,
+            attempts(),
+            &wire,
+            cost::CostOrder::Configured,
+            money(100),
+            2,
+            &|| clock.get(),
+        ))
+        .unwrap();
+        assert!(run.result.is_err());
+        let error = run.result.unwrap_err();
+        if provider_error {
+            assert!(matches!(
+                &error,
+                Error::ProviderResponse { status: 429, .. }
+            ));
+            assert_eq!(
+                error.upstream().unwrap().expose(),
+                b"private provider refusal"
+            );
+        } else {
+            assert_eq!(error, Error::Uncertain);
+        }
+        assert_eq!(run.attempts, 1);
+        assert_eq!(run.exposure, money(10));
+        assert_eq!(wire.wire.requests.borrow().len(), 1);
+        assert_eq!(state.journal.inner.lock().unwrap().0.len(), 1);
+    }
+    struct BetweenAttempts<'a>(&'a Cell<u8>);
+    impl Transport for BetweenAttempts<'_> {
+        fn mode(&self) -> cost::Mode {
+            cost::Mode::Production
+        }
+        async fn send(&self, _: http::Request<Private>) -> Result<http::Response<Private>, Error> {
+            assert_eq!(self.0.get(), 0);
+            yield_once().await;
+            self.0.set(1);
+            Err(Error::NotDispatched)
+        }
+    }
+    let clock = Cell::new(100);
+    let stage = Cell::new(0);
+    let state = WaitingState {
+        clock: &clock,
+        journal: Journal::default(),
+        advance: 150,
+    };
+    let live_clock = || match stage.get() {
+        1 => {
+            stage.set(2);
+            150
+        }
+        2 => 120,
+        _ => clock.get(),
+    };
+    let run = block_on(begin_with_fallback(
+        &state,
+        attempts(),
+        &BetweenAttempts(&stage),
+        cost::CostOrder::Configured,
+        money(100),
+        2,
+        &live_clock,
+    ))
+    .unwrap();
+    assert_eq!(run.result.unwrap_err(), Error::Configuration);
+    assert_eq!(run.attempts, 1);
+    assert_eq!(run.exposure, money(10));
+    assert_eq!(state.journal.inner.lock().unwrap().0.len(), 1);
+}

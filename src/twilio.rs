@@ -197,7 +197,8 @@ impl Prepared {
         permit: cost::DispatchPermit<usize>,
         clock: &impl Fn() -> u64,
     ) -> Result<Step, Error> {
-        self.dispatch_inner(state, transport, permit, clock, clock(), None)
+        let mut observed = clock();
+        self.dispatch_inner(state, transport, permit, clock, &mut observed, None)
             .await
     }
     /// Explicitly retain any bounded reply, including malformed, refused and pending
@@ -210,13 +211,14 @@ impl Prepared {
         clock: &impl Fn() -> u64,
     ) -> DispatchReport {
         let mut response = None;
+        let mut observed = clock();
         let result = self
             .dispatch_inner(
                 state,
                 transport,
                 permit,
                 clock,
-                clock(),
+                &mut observed,
                 Some(&mut response),
             )
             .await;
@@ -228,13 +230,14 @@ impl Prepared {
         transport: &impl Transport,
         permit: cost::DispatchPermit<usize>,
         clock: &impl Fn() -> u64,
-        observed: u64,
+        observed: &mut u64,
         report: Option<&mut Option<http::Response<Private>>>,
     ) -> Result<Step, Error> {
         let now = clock();
-        if now < observed {
+        if now < *observed {
             return Err(Error::Configuration);
         }
+        *observed = now;
         permit
             .validate(&self.binding, cost::Mode::Production, now)
             .map_err(|_| Error::Budget)?;
@@ -261,6 +264,7 @@ impl Prepared {
         if dispatched < now {
             return Err(Error::Configuration);
         }
+        *observed = dispatched;
         if dispatched >= deadline {
             return Err(Error::NotDispatched);
         }
@@ -271,7 +275,13 @@ impl Prepared {
                 .valid_until
                 .min(self.pending.context.expires_at),
         });
-        let response = transport.send(request).await?;
+        let response = transport.send(request).await;
+        let completed = clock();
+        *observed = (*observed).max(completed);
+        let response = response.map_err(|error| match error {
+            Error::NotDispatched if completed < dispatched => Error::Uncertain,
+            error => error,
+        })?;
         if response.body().expose().len() > 65536 {
             return Err(Error::Uncertain);
         }
@@ -285,7 +295,6 @@ impl Prepared {
             *copy.version_mut() = response.version();
             *report = Some(copy);
         }
-        let completed = clock();
         if completed < dispatched || completed >= self.pending.context.expires_at {
             return Err(Error::Uncertain);
         }
