@@ -188,14 +188,16 @@ impl Prepared {
         &self.binding
     }
     /// Make one request only after validating the cost permit and real transport mode.
+    /// The trusted host clock is sampled after reservation and response completion.
+    /// Expired replies remain uncertain; no reserved exposure is released here.
     pub async fn dispatch(
         self,
         state: &impl DispatchState,
         transport: &impl Transport,
         permit: cost::DispatchPermit<usize>,
-        now: u64,
+        clock: &impl Fn() -> u64,
     ) -> Result<Step, Error> {
-        self.dispatch_inner(state, transport, permit, now, None)
+        self.dispatch_inner(state, transport, permit, clock, clock(), None)
             .await
     }
     /// Explicitly retain any bounded reply, including malformed, refused and pending
@@ -205,22 +207,34 @@ impl Prepared {
         state: &impl DispatchState,
         transport: &impl Transport,
         permit: cost::DispatchPermit<usize>,
-        now: u64,
+        clock: &impl Fn() -> u64,
     ) -> DispatchReport {
         let mut response = None;
         let result = self
-            .dispatch_inner(state, transport, permit, now, Some(&mut response))
+            .dispatch_inner(
+                state,
+                transport,
+                permit,
+                clock,
+                clock(),
+                Some(&mut response),
+            )
             .await;
         DispatchReport { result, response }
     }
-    async fn dispatch_inner(
+    pub(crate) async fn dispatch_inner(
         self,
         state: &impl DispatchState,
         transport: &impl Transport,
         permit: cost::DispatchPermit<usize>,
-        now: u64,
+        clock: &impl Fn() -> u64,
+        observed: u64,
         report: Option<&mut Option<http::Response<Private>>>,
     ) -> Result<Step, Error> {
+        let now = clock();
+        if now < observed {
+            return Err(Error::Configuration);
+        }
         permit
             .validate(&self.binding, cost::Mode::Production, now)
             .map_err(|_| Error::Budget)?;
@@ -239,6 +253,17 @@ impl Prepared {
                     .min(self.pending.context.expires_at),
             )
             .map_err(|_| Error::Reservation)?;
+        let deadline = permit
+            .quote()
+            .valid_until
+            .min(self.pending.context.expires_at);
+        let dispatched = clock();
+        if dispatched < now {
+            return Err(Error::Configuration);
+        }
+        if dispatched >= deadline {
+            return Err(Error::NotDispatched);
+        }
         let mut request = self.request;
         request.extensions_mut().insert(DispatchDeadline {
             valid_until: permit
@@ -259,6 +284,10 @@ impl Prepared {
             }
             *copy.version_mut() = response.version();
             *report = Some(copy);
+        }
+        let completed = clock();
+        if completed < dispatched || completed >= self.pending.context.expires_at {
+            return Err(Error::Uncertain);
         }
         if !response.status().is_success() {
             return Err(Error::ProviderResponse {
@@ -293,7 +322,7 @@ impl Prepared {
             expires_at: self.pending.context.expires_at,
             upstream: Some(response.into_body()),
         };
-        adapters::project(evidence, self.pending.context, now).map(Step::Verified)
+        adapters::project(evidence, self.pending.context, completed).map(Step::Verified)
     }
 }
 

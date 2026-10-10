@@ -26,6 +26,8 @@ pub trait Adapter {
     fn mode(&self) -> cost::Mode;
     /// Authenticate once, with no hidden retry, side effect or persistence outside the permit.
     /// Provider errors must remain uniform; charge uncertainty must remain explicit.
+    /// Recheck the permit/context deadline with a fresh trusted clock after any
+    /// internal queue and immediately before I/O. No hidden retry is authorized.
     fn authenticate(
         &self,
         input: Self::Input,
@@ -42,8 +44,9 @@ pub async fn verify_with<A: Adapter>(
     input: A::Input,
     context: Context,
     permit: cost::DispatchPermit<usize>,
-    now: u64,
+    clock: &impl Fn() -> u64,
 ) -> Result<Verified, Error> {
+    let now = clock();
     if context.scope.is_empty()
         || context.expires_at <= now
         || adapter.mode() != cost::Mode::Production
@@ -63,8 +66,38 @@ pub async fn verify_with<A: Adapter>(
             permit.quote().valid_until.min(context.expires_at),
         )
         .map_err(|_| Error::Reservation)?;
-    let evidence = adapter.authenticate(input, &context, permit, now).await?;
-    project(evidence, context, now)
+    let deadline = permit.quote().valid_until.min(context.expires_at);
+    let dispatched = clock();
+    if dispatched < now {
+        return Err(Error::Configuration);
+    }
+    if dispatched >= deadline {
+        return Err(Error::NotDispatched);
+    }
+    let evidence = adapter
+        .authenticate(input, &context, permit, dispatched)
+        .await?;
+    let completed = clock();
+    let response = if context.include_upstream {
+        evidence
+            .upstream
+            .as_ref()
+            .map(|data| Private::new(data.expose().to_vec()))
+    } else {
+        None
+    };
+    let result = if completed < dispatched || completed >= context.expires_at {
+        Err(Error::Uncertain)
+    } else {
+        project(evidence, context, completed)
+    };
+    result.map_err(|error| match response {
+        Some(response) => Error::Reported {
+            error: Box::new(error),
+            response,
+        },
+        None => error,
+    })
 }
 
 pub(crate) fn project(

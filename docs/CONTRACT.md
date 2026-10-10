@@ -67,3 +67,13 @@ have no response, and oversized replies are refused rather than retained.
 Prepared requests carry a local `DispatchDeadline` extension. A trusted transport
 must check it using its fresh clock immediately before I/O, after any queue wait;
 missing/expired metadata refuses without dispatch. It is never a provider header.
+
+
+Async operations take an injected trusted live clock, rather than reusing a
+pre-await timestamp. They recheck exclusive validity after awaited provider or
+state work; a clock rollback refuses the operation. A reply that arrives after its context/capture deadline creates no fresh
+fact; tariff expiry limits dispatch, not an already-authorized response. Explicit private report access remains available, and uncertainty never
+releases a cost reservation automatically.
+`include_upstream` also preserves an extension adapter's available private
+response on a completion/projection refusal through `Error::Reported`; its
+underlying error category stays explicit and diagnostics remain redacted.

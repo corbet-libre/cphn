@@ -64,6 +64,14 @@ pub enum Error {
         /// Exact bounded private response, never authenticated verification evidence.
         response: Private,
     },
+    /// Explicitly requested private upstream data retained on a rejected result.
+    #[error("{error}")]
+    Reported {
+        /// Original redacted failure category.
+        error: Box<Error>,
+        /// Private available upstream data; never authentication evidence.
+        response: Private,
+    },
     /// Cost authorization did not match this dispatch.
     #[error("verification cost authorization refused")]
     Budget,
@@ -74,7 +82,9 @@ impl Error {
     /// These are provider assertions, not verified domain facts.
     pub fn upstream(&self) -> Option<&Private> {
         match self {
-            Self::ProviderResponse { response, .. } => Some(response),
+            Self::ProviderResponse { response, .. } | Self::Reported { response, .. } => {
+                Some(response)
+            }
             _ => None,
         }
     }

@@ -8,6 +8,8 @@ export RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-stable}"
 : "${CI_COMMIT_SHA:?verify requires the exact source revision}"
 : "${ARTIFACT_ROOT:?verify requires an absolute ARTIFACT_ROOT}"
 [[ "$ARTIFACT_ROOT" = /* ]] || { echo "ARTIFACT_ROOT must be absolute" >&2; exit 2; }
+# Preserve available reports on failure too; never discard the original exit status.
+trap 'result=$?; for report in coverage.json coverage.lcov coverage.txt; do if [[ -f "$report" ]]; then cp -- "$report" "$ARTIFACT_ROOT/" || result=1; fi; done; exit "$result"' EXIT
 export RUNNER_TEMP="${RUNNER_TEMP:-$(mktemp -d)}"
 export GITHUB_PATH="${GITHUB_PATH:-$RUNNER_TEMP/github_path}"
 touch "$GITHUB_PATH"
@@ -15,6 +17,7 @@ python3 .github/check-first-party.py
 cargo fmt --all --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
+python3 .ci/test-clock-regression.py
 cargo check --locked --target wasm32-unknown-unknown
 version=$(python3 -c "import tomllib; print(next(p['version'] for p in tomllib.load(open('Cargo.lock','rb'))['package'] if p['name']=='wasm-bindgen'))")
 archive="wasm-bindgen-${version}-x86_64-unknown-linux-musl.tar.gz"

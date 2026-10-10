@@ -34,8 +34,9 @@ pub async fn begin_with_fallback(
     order: cost::CostOrder,
     budget: cost::Amount,
     max_attempts: usize,
-    now: u64,
+    clock: &impl Fn() -> u64,
 ) -> Result<Run, Error> {
+    let mut now = clock();
     let offers = attempts
         .iter()
         .enumerate()
@@ -69,6 +70,15 @@ pub async fn begin_with_fallback(
     let mut cascade = plan.start();
     let mut attempts: Vec<_> = attempts.into_iter().map(Some).collect();
     loop {
+        let current = clock();
+        if current < now {
+            return Ok(Run {
+                result: Err(Error::Configuration),
+                exposure: cascade.exposure(),
+                attempts: cascade.attempts(),
+            });
+        }
+        now = current;
         let permit = match cascade.begin(now) {
             Ok(permit) => permit,
             Err(_) => {
@@ -83,7 +93,7 @@ pub async fn begin_with_fallback(
         let attempt = attempts[index].take().ok_or(Error::Configuration)?;
         let result = attempt
             .prepared
-            .dispatch(state, transport, permit, now)
+            .dispatch_inner(state, transport, permit, clock, now, None)
             .await;
         let outcome = match &result {
             Ok(Step::Verified(_)) => cost::Outcome::Success,

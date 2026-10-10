@@ -17,8 +17,9 @@ any genuinely unreachable defensive branch precisely before excluding it. Native
 coverage does not establish browser execution; keep the actual wasm vectors.
 
 First-party dependencies follow main. Their resolved full revisions remain in
-Cargo.lock, with exactly one source per first-party crate. Dependabot maintains
-committed snapshots; CI refreshes once per run and retains the tested snapshot.
+Cargo.lock, with exactly one source per first-party crate. Dependency refreshes retain
+their resolved snapshot; final verification uses the committed lockfile without
+resolving a different graph.
 Auto-merge requires protected main and successful substantive checks on the
 exact current Dependabot head. It never executes PR code with write permissions.
 
@@ -35,3 +36,11 @@ The source gate requires a nonempty report, an exact file inventory matching the
 companion JSON, matching raw summary metadata, complete emitted branch counts
 and no duplicate, unknown or zero counters. It has no production exclusions.
 Actual browser/device execution remains separate from native coverage.
+
+
+CI also runs a narrow frozen-completion-clock mutation control against each new
+async timing regression. It restores the exact source bytes in `finally` and
+requires the specifically selected test to fail by assertion; compilation errors,
+empty selections and unrelated failures do not count. Atomic host-port deadline
+checks remain enabled in these controls. The normal source and complete suite
+still pass before the mutation is introduced, and coverage uses restored source.
