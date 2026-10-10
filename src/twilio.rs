@@ -207,20 +207,13 @@ impl Prepared {
         if !self.checking || decoded.status != "approved" || decoded.valid != Some(true) {
             return Err(Error::Refused);
         }
-        let context = self.pending.context;
-        let identity = Identity::derive(
-            &context.identity_key,
-            &context.scope,
-            "phone.e164",
-            &self.pending.canonical,
-        );
-        let upstream = context.include_upstream.then(|| response.into_body());
-        Ok(Step::Verified(Verified {
-            identity,
-            binding: context.binding,
-            expires_at: context.expires_at,
-            upstream,
-        }))
+        let evidence = AdapterEvidence {
+            identifier: Private::new(self.pending.canonical.as_bytes().to_vec()),
+            binding: self.pending.context.binding,
+            expires_at: self.pending.context.expires_at,
+            upstream: Some(response.into_body()),
+        };
+        adapters::project(evidence, self.pending.context, now).map(Step::Verified)
     }
 }
 

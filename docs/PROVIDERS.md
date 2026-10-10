@@ -3,7 +3,7 @@
 | Integration | Implemented | Qualification limit |
 |---|---|---|
 | Twilio Verify v2 | Create/check, SMS/RCS, WhatsApp with possible SMS fallback, and voice, correlated response validation, full-result option | Wire contract exercised with inert transports; live delivery not run |
-| Other providers | Can be researched and integrated under the same domain/cost boundary | No other concrete provider is implemented or enabled |
+| Other providers | Trusted `Adapter` port plus shared authenticated identity projection | No other concrete provider is implemented or enabled |
 
 The adapter wraps maintained `http`, `url`, Serde and RustCrypto implementations;
 Twilio publishes official SDKs for several languages but no Rust SDK in its
@@ -77,3 +77,17 @@ committed CI locks record the exact tested graph.
 
 [Verification API](https://www.twilio.com/docs/verify/api/verification),
 [verification-check API](https://www.twilio.com/docs/verify/api/verification-check).
+
+## Extending the domain
+
+`Adapter` is a trusted application-code boundary: an implementation must authenticate
+its provider, independently establish control, bind the exact request/context and
+supply an exclusive evidence expiry. `verify_with` checks the cost permit before
+calling it and applies the same canonicalization, scoped HMAC and requested-data
+projection as the built-in integration. An adapter is not a member-supplied JSON
+object; accepting unauthenticated fields in one violates this contract.
+
+`simulate` accepts explicit dummy outcomes and uses the real planner and
+normalizer. Its `Simulated` output cannot be used as `Verified` or reserve a
+registration. The open verification port currently accepts Production only; a
+future provider sandbox must have distinct evidence and credential types.

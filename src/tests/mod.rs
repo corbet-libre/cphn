@@ -709,3 +709,107 @@ fn malformed_private_session_and_wrong_sid_prefix_are_refused() {
 fn impossible_national_number_is_not_a_canonical_identity() {
     assert!(normalize("+1202555").is_err());
 }
+
+struct Extension {
+    mode: cost::Mode,
+    result: RefCell<Option<Result<AdapterEvidence, Error>>>,
+    binding: Result<String, Error>,
+}
+impl Adapter for Extension {
+    type Input = ();
+    fn mode(&self) -> cost::Mode {
+        self.mode
+    }
+    fn binding(&self, _: &(), _: &Context) -> Result<String, Error> {
+        self.binding
+            .as_ref()
+            .cloned()
+            .map_err(|_| Error::Configuration)
+    }
+    async fn authenticate(
+        &self,
+        _: (),
+        _: &Context,
+        _: cost::DispatchPermit<usize>,
+        _: u64,
+    ) -> Result<AdapterEvidence, Error> {
+        self.result.borrow_mut().take().unwrap()
+    }
+}
+fn evidence() -> AdapterEvidence {
+    AdapterEvidence {
+        identifier: Private::new(DEST.as_bytes().to_vec()),
+        binding: [1; 32],
+        expires_at: 250,
+        upstream: Some(Private::new(b"complete upstream result".to_vec())),
+    }
+}
+#[test]
+fn open_adapter_port_projects_only_authenticated_scoped_requested_data() {
+    for rich in [false, true] {
+        let p = prepared();
+        let permit = get_permit(&p, cost::Mode::Production, 200);
+        let extension = Extension {
+            mode: cost::Mode::Production,
+            result: RefCell::new(Some(Ok(evidence()))),
+            binding: Ok(p.binding().into()),
+        };
+        let mut c = context();
+        c.include_upstream = rich;
+        let verified = block_on(verify_with(&extension, (), c, permit, 101)).unwrap();
+        assert_eq!(verified.expires_at(), 250);
+        assert_eq!(verified.upstream().is_some(), rich);
+        assert_eq!(verified.identity(), self::verified(false).identity());
+    }
+    for case in 0..5 {
+        let mut e = evidence();
+        match case {
+            0 => e.binding = [9; 32],
+            1 => e.expires_at = 100,
+            2 => e.identifier = Private::new(vec![255]),
+            3 => e.identifier = Private::new(b"invalid".to_vec()),
+            _ => {}
+        }
+        let p = prepared();
+        let permit = get_permit(&p, cost::Mode::Production, 200);
+        let result = if case == 4 {
+            Err(Error::Uncertain)
+        } else {
+            Ok(e)
+        };
+        let extension = Extension {
+            mode: cost::Mode::Production,
+            result: RefCell::new(Some(result)),
+            binding: Ok(p.binding().into()),
+        };
+        assert!(block_on(verify_with(&extension, (), context(), permit, 101)).is_err());
+    }
+    for case in 0..5 {
+        let p = prepared();
+        let permit = get_permit(&p, cost::Mode::Production, 200);
+        let mut c = context();
+        let mut extension = Extension {
+            mode: cost::Mode::Production,
+            result: RefCell::new(None),
+            binding: Ok(p.binding().into()),
+        };
+        match case {
+            0 => c.scope.clear(),
+            1 => c.expires_at = 100,
+            2 => extension.mode = cost::Mode::Simulation,
+            3 => extension.binding = Ok("wrong".into()),
+            _ => extension.binding = Err(Error::Configuration),
+        }
+        assert!(block_on(verify_with(&extension, (), c, permit, 101)).is_err());
+    }
+    for case in 0..2 {
+        let mut c = context();
+        if case == 0 {
+            c.scope.clear();
+        } else {
+            c.expires_at = 100;
+        }
+        assert!(adapters::project(evidence(), c, 101).is_err());
+    }
+    assert!(!format!("{:?}", evidence()).contains(DEST));
+}

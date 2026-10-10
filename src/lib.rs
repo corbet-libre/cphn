@@ -3,8 +3,10 @@
 //! No provider I/O occurs without a cost permit; no database connection is opened.
 #![forbid(unsafe_code)]
 
+mod adapters;
 mod flow;
 mod identity;
+pub use adapters::{Adapter, AdapterEvidence, verify_with};
 mod simulation;
 pub use simulation::{Simulated, SimulationOffer, SimulationSettings, simulate};
 mod twilio;
