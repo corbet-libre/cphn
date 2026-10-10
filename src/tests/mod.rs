@@ -101,6 +101,7 @@ impl Transport for Wire {
         &self,
         request: http::Request<Private>,
     ) -> Result<http::Response<Private>, Error> {
+        assert!(request.extensions().get::<DispatchDeadline>().is_some());
         self.requests.borrow_mut().push(request);
         self.results.borrow_mut().pop_front().unwrap()
     }
@@ -1126,6 +1127,7 @@ fn complete_report_preserves_bounded_pending_refused_and_malformed_responses() {
         let raw = report.response.unwrap();
         assert_eq!(raw.status().as_u16(), status);
         assert_eq!(raw.headers()["x-provider"], "private-extension");
+        assert!(!format!("{raw:?}").contains("private-extension"));
         assert_eq!(raw.body().expose(), body);
         assert_eq!(wire.requests.borrow().len(), 1);
     }
@@ -1140,4 +1142,30 @@ fn complete_report_preserves_bounded_pending_refused_and_malformed_responses() {
         assert!(report.result.is_err());
         assert!(report.response.is_none());
     }
+}
+
+#[test]
+fn transport_receives_effective_deadline_and_refuses_queued_expired_work() {
+    struct Queued;
+    impl Transport for Queued {
+        fn mode(&self) -> cost::Mode {
+            cost::Mode::Production
+        }
+        async fn send(
+            &self,
+            request: http::Request<Private>,
+        ) -> Result<http::Response<Private>, Error> {
+            let deadline = request.extensions().get::<DispatchDeadline>().unwrap();
+            assert_eq!(deadline.valid_until, 150);
+            let fresh_time_after_queue = 151;
+            assert!(fresh_time_after_queue >= deadline.valid_until);
+            Err(Error::NotDispatched)
+        }
+    }
+    let p = prepared();
+    let permit = get_permit(&p, cost::Mode::Production, 150);
+    assert_eq!(
+        block_on(p.dispatch(&Journal::default(), &Queued, permit, 100)).unwrap_err(),
+        Error::NotDispatched
+    );
 }

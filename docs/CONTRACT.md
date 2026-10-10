@@ -63,3 +63,7 @@ including status, headers and extensions, even for pending, malformed or refused
 responses. Its `result` follows the same authentication path as minimal dispatch;
 raw reply access never constructs verified facts. Pre-dispatch/network failures
 have no response, and oversized replies are refused rather than retained.
+
+Prepared requests carry a local `DispatchDeadline` extension. A trusted transport
+must check it using its fresh clock immediately before I/O, after any queue wait;
+missing/expired metadata refuses without dispatch. It is never a provider header.

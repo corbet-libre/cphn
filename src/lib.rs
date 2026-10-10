@@ -86,10 +86,20 @@ pub trait Transport {
     /// Explicit transport mode; simulation is never accepted by a real adapter.
     fn mode(&self) -> cost::Mode;
     /// Dispatch exactly one prepared HTTPS request. Never persist request or response bodies.
+    /// Check `DispatchDeadline` in request extensions using a fresh trusted clock
+    /// immediately before I/O, including after any queue wait. Refuse missing or
+    /// expired deadlines as `NotDispatched`; never retry a possibly sent operation.
     fn send(
         &self,
         request: http::Request<Private>,
     ) -> impl std::future::Future<Output = Result<http::Response<Private>, Error>>;
+}
+
+/// Local-only HTTP request extension. Never sent to the provider as a header.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DispatchDeadline {
+    /// Exclusive minimum of the authenticated context and quote expiries.
+    pub valid_until: u64,
 }
 
 /// Caller-owned atomic dispatch and shared-budget reservation. Implementations

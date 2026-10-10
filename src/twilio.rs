@@ -239,7 +239,14 @@ impl Prepared {
                     .min(self.pending.context.expires_at),
             )
             .map_err(|_| Error::Reservation)?;
-        let response = transport.send(self.request).await?;
+        let mut request = self.request;
+        request.extensions_mut().insert(DispatchDeadline {
+            valid_until: permit
+                .quote()
+                .valid_until
+                .min(self.pending.context.expires_at),
+        });
+        let response = transport.send(request).await?;
         if response.body().expose().len() > 65536 {
             return Err(Error::Uncertain);
         }
@@ -247,6 +254,9 @@ impl Prepared {
             let mut copy = http::Response::new(Private::new(response.body().expose().to_vec()));
             *copy.status_mut() = response.status();
             *copy.headers_mut() = response.headers().clone();
+            for value in copy.headers_mut().values_mut() {
+                value.set_sensitive(true);
+            }
             *copy.version_mut() = response.version();
             *report = Some(copy);
         }
