@@ -91,3 +91,31 @@ object; accepting unauthenticated fields in one violates this contract.
 normalizer. Its `Simulated` output cannot be used as `Verified` or reserve a
 registration. The open verification port currently accepts Production only; a
 future provider sandbox must have distinct evidence and credential types.
+
+## Provider and protocol arsenal
+
+Primary documentation reviewed 2026-10-10. **Implemented** means the local
+fixture-tested path described here, not live-provider qualification.
+**Extension-compatible** means the existing trusted interface can carry the
+integration; provider-specific authentication/correlation still needs work.
+**Candidate** means researched only. **Unsupported** means the stated guarantee
+must not be inferred. These are integration options, not activated services.
+
+Every future network route needs an explicit injected credential, account/mode
+binding, bounded cost quote with provenance and expiry, atomic host reservations,
+fresh dispatch deadlines, rich private reports and negative fixtures. Unknown
+prices block dispatch. Cost bases below identify what a host must obtain; they
+are not current numeric quotations or permission to contact the provider.
+
+| Ecosystem and source | Status / reuse path | Credentials and cost basis | Semantic limit |
+|---|---|---|---|
+| [Twilio Verify](https://www.twilio.com/docs/verify/api) | Implemented: SMS/RCS, WhatsApp/SMS fallback, voice through maintained HTTP/form libraries. | Inject account/service SID and auth token; account tariff covers all enabled routes, starts and checks. | Number control; no one-person claim. Configured provider fallback must fit the maximum. |
+| [Vonage Verify v2](https://developer.vonage.com/en/api/verify.v2) | Extension-compatible candidate: official API/SDK with explicit workflow correlation. | Application JWT or supported Basic credentials; configured Verify pricing model plus every workflow channel. | Silent authentication has device/network constraints; later workflow stages cannot silently exceed the quote. |
+| [Sinch Verification](https://developers.sinch.com/docs/verification/introduction) | Extension-compatible candidate: REST or official platform SDK. | [Application-signed server requests](https://developers.sinch.com/docs/verification/api-reference/authentication); dashboard tariff by method/destination. | SMS, flashcall, call and data have distinct capture guarantees. SDK callbacks require authentication; data verification availability is conditional. |
+| [Telnyx Verify](https://support.telnyx.com/en/articles/5701653-telnyx-verify-2fa-made-easy) | Extension-compatible candidate: Verify API with explicit profile and verification ID. | Inject API key/profile; verified account tariff must cover verification and delivery attempts. | Delivery acceptance is not code approval; profile routing/settings form part of request and price configuration. |
+| [Infobip 2FA](https://www.infobip.com/docs/2fa-service) | Extension-compatible candidate: upstream SDK/API, bind application/template/PIN ID. | [Injected scoped API credentials](https://www.infobip.com/docs/essentials/api-essentials/api-authentication) and account base URL; quote selected SMS/voice workflow. | A successful send is not a successful PIN check. Channels and destination remain bound throughout. |
+| [Stytch SMS OTP](https://stytch.com/docs/api-reference/consumer/api/otp/via-sms/send) | Extension-compatible candidate: official SDK/API; evaluate its Rust SDK before a direct HTTP wrapper. | Project ID/secret and explicit environment; account-plan quote covering requested OTP operations. | Provider user/session IDs are not phone identities; authenticate the OTP and correlate its verified destination before canonicalization. |
+
+A messaging-only SMS gateway is not a verification adapter. It would additionally
+need a sound challenge lifecycle and caller-owned atomic attempt/consumption
+state; this library does not quietly manufacture that guarantee.
