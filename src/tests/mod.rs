@@ -49,7 +49,7 @@ fn money(atoms: u64) -> cost::Amount {
         atoms,
     }
 }
-fn permit(p: &Prepared, mode: cost::Mode, expiry: u64) -> cost::DispatchPermit<usize> {
+fn get_permit(p: &Prepared, mode: cost::Mode, expiry: u64) -> cost::DispatchPermit<usize> {
     cost::Plan::new(
         vec![cost::Offer {
             candidate: cfbk::Candidate::new(0, ["control"]),
@@ -108,7 +108,7 @@ fn pending(rich: bool) -> Pending {
     let mut c = context();
     c.include_upstream = rich;
     let p = adapter().prepare_begin(DEST, CHANNEL, c, 100).unwrap();
-    let permit = permit(&p, cost::Mode::Production, 200);
+    let permit = get_permit(&p, cost::Mode::Production, 200);
     match block_on(p.dispatch(
         &Wire::new(vec![Ok(response(reply("pending")))]),
         permit,
@@ -124,7 +124,7 @@ fn verified(rich: bool) -> Verified {
     let p = adapter()
         .prepare_check(pending(rich), "123456", 101)
         .unwrap();
-    let permit = permit(&p, cost::Mode::Production, 200);
+    let permit = get_permit(&p, cost::Mode::Production, 200);
     match block_on(p.dispatch(
         &Wire::new(vec![Ok(response(reply("approved")))]),
         permit,
@@ -137,10 +137,11 @@ fn verified(rich: bool) -> Verified {
     }
 }
 
-#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn actual_twilio_wire_is_correlated_and_only_requested_rich_data_survives() {
     let p = prepared();
-    let permit = permit(&p, cost::Mode::Production, 200);
+    let permit = get_permit(&p, cost::Mode::Production, 200);
     let wire = Wire::new(vec![Ok(response(reply("pending")))]);
     let step = block_on(p.dispatch(&wire, permit, 100)).unwrap();
     let Step::Pending(pending) = step else {
@@ -159,7 +160,7 @@ fn actual_twilio_wire_is_correlated_and_only_requested_rich_data_survives() {
     assert_eq!(form["To"], DEST);
     assert_eq!(form["Channel"], CHANNEL.as_str());
     let p = adapter().prepare_check(pending, "123456", 101).unwrap();
-    let permit = permit(&p, cost::Mode::Production, 200);
+    let permit = get_permit(&p, cost::Mode::Production, 200);
     let wire = Wire::new(vec![Ok(response(reply("approved")))]);
     let Step::Verified(v) = block_on(p.dispatch(&wire, permit, 101)).unwrap() else {
         panic!("verified")
@@ -190,7 +191,8 @@ fn actual_twilio_wire_is_correlated_and_only_requested_rich_data_survives() {
     assert!(!format!("{rich:?}").contains(DEST));
 }
 
-#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn authentication_response_and_session_mismatches_never_create_a_fact() {
     for (field, value) in [
         ("account_sid", serde_json::json!("wrong")),
@@ -207,14 +209,14 @@ fn authentication_response_and_session_mismatches_never_create_a_fact() {
         let p = adapter()
             .prepare_check(pending(false), "123456", 101)
             .unwrap();
-        let permit = permit(&p, cost::Mode::Production, 200);
+        let permit = get_permit(&p, cost::Mode::Production, 200);
         assert_eq!(
             block_on(p.dispatch(&Wire::new(vec![Ok(response(r))]), permit, 101)).unwrap_err(),
             Error::Refused
         );
     }
     let p = prepared();
-    let permit = permit(&p, cost::Mode::Production, 200);
+    let permit = get_permit(&p, cost::Mode::Production, 200);
     assert_eq!(
         block_on(p.dispatch(
             &Wire::new(vec![Ok(response(reply("approved")))]),
@@ -227,7 +229,7 @@ fn authentication_response_and_session_mismatches_never_create_a_fact() {
     let p = adapter()
         .prepare_check(pending(false), "123456", 101)
         .unwrap();
-    let permit = permit(&p, cost::Mode::Production, 200);
+    let permit = get_permit(&p, cost::Mode::Production, 200);
     assert!(matches!(
         block_on(p.dispatch(
             &Wire::new(vec![Ok(response(reply("pending")))]),
@@ -238,7 +240,8 @@ fn authentication_response_and_session_mismatches_never_create_a_fact() {
     ));
 }
 
-#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn malformed_responses_and_possible_effects_fail_closed_without_retry() {
     for result in [
         Ok(http::Response::builder()
@@ -251,14 +254,15 @@ fn malformed_responses_and_possible_effects_fail_closed_without_retry() {
         Err(Error::NotDispatched),
     ] {
         let p = prepared();
-        let permit = permit(&p, cost::Mode::Production, 200);
+        let permit = get_permit(&p, cost::Mode::Production, 200);
         let wire = Wire::new(vec![result]);
         assert!(block_on(p.dispatch(&wire, permit, 101)).is_err());
         assert_eq!(wire.requests.borrow().len(), 1);
     }
 }
 
-#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn credentials_inputs_scope_time_and_modes_are_validated_before_transport() {
     for (a, s, secret, mode) in [
         (
@@ -341,7 +345,7 @@ fn credentials_inputs_scope_time_and_modes_are_validated_before_transport() {
     assert!(other.prepare_check(pending(false), "123456", 101).is_err());
     for mode in [cost::Mode::Simulation, cost::Mode::Sandbox] {
         let p = prepared();
-        let permit = permit(&p, mode, 200);
+        let permit = get_permit(&p, mode, 200);
         let wire = Wire::new(vec![]);
         assert_eq!(
             block_on(p.dispatch(&wire, permit, 101)).unwrap_err(),
@@ -349,7 +353,7 @@ fn credentials_inputs_scope_time_and_modes_are_validated_before_transport() {
         );
         assert!(wire.requests.borrow().is_empty());
         let p = prepared();
-        let permit = permit(&p, cost::Mode::Production, 200);
+        let permit = get_permit(&p, cost::Mode::Production, 200);
         let mut wire = Wire::new(vec![]);
         wire.mode = mode;
         assert_eq!(
@@ -359,7 +363,7 @@ fn credentials_inputs_scope_time_and_modes_are_validated_before_transport() {
     }
     for expired in [200, 300] {
         let p = prepared();
-        let permit = permit(
+        let permit = get_permit(
             &p,
             cost::Mode::Production,
             if expired == 200 { 200 } else { 400 },
@@ -378,7 +382,7 @@ fn credentials_inputs_scope_time_and_modes_are_validated_before_transport() {
             100,
         )
         .unwrap();
-    let permit = permit(&wrong, cost::Mode::Production, 200);
+    let permit = get_permit(&wrong, cost::Mode::Production, 200);
     assert_eq!(
         block_on(p.dispatch(&Wire::new(vec![]), permit, 101)).unwrap_err(),
         Error::Budget
@@ -403,7 +407,8 @@ fn attempt(amount: u64) -> Attempt {
         quote_valid_until: 200,
     }
 }
-#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn configured_and_cost_order_cascades_reserve_failed_costs_and_stop_on_pending() {
     let wire = Wire::new(vec![
         Err(Error::NotDispatched),
@@ -506,7 +511,8 @@ impl RegistrationState for State {
         Ok(Reservation::Reserved)
     }
 }
-#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn caller_state_enforces_general_limits_and_idempotency_without_a_library_database() {
     let v = verified(false);
     let state = State::default();
@@ -552,7 +558,8 @@ fn caller_state_enforces_general_limits_and_idempotency_without_a_library_databa
     );
 }
 
-#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn maintained_phone_metadata_and_all_channels_are_exercised() {
     assert_eq!(normalize("+1 (202) 555-0123").unwrap(), DEST);
     for invalid in ["invalid", "+1", "+12025550123 ext 1"] {
@@ -568,7 +575,7 @@ fn maintained_phone_metadata_and_all_channels_are_exercised() {
         let p = adapter()
             .prepare_begin(DEST, channel, context(), 100)
             .unwrap();
-        let permit = permit(&p, cost::Mode::Production, 200);
+        let permit = get_permit(&p, cost::Mode::Production, 200);
         let mut r = reply("pending");
         r["channel"] = serde_json::json!(wire);
         assert!(matches!(
