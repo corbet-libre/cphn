@@ -1,26 +1,44 @@
-# Phone possession contract
+# Phone verification contract
 
-Home: `cvld` gate leaves; provider selection is composed through `cfbk` from
-`crbk` settings. The library performs one check, never a provider cascade.
+The caller selects one or more explicit provider/channel operations and asks
+for phone control, a scoped comparison identity and its required information.
+The library owns normalization, provider-response verification and transformation.
+A comparison identity does not establish that the holder is a unique person.
 
-1. The host selects one provider/channel, obtains verification limits and creates
-   a code using its CSPRNG. The host owns credentials and raw-input hygiene.
-2. `begin` normalizes the phone and validates the code and nonzero limits before
-   invoking `ChannelSender::send` exactly once. It returns hashed pending state
-   only if that call succeeds. Errors carry no identifiers and never cause retry.
-3. `check` enforces expiry and a finite attempt budget using the supplied clock.
-   It compares SHA-256 code digests through `subtle`. Success consumes the code.
-4. The trusted host derives `dedup_handle` from the normalized phone and its
-   community secret. It binds that handle, policy digest and expiry through
-   `attestation_bytes`, and signs only after verified possession. The byte builder
-   itself confers no admission authority. No raw phone enters the attestation.
+1. Construct a configured `Twilio` adapter with injected credentials. No secrets
+   discovery, account registration or implicit network access takes place.
+2. `prepare_begin` normalizes the destination and binds a private HTTP request to
+   account/service, operation, channel, subject/action context, identity scope,
+   validity and requested output. Preparation is inert; the quote binding is keyed.
+3. Supply an exact price or defensible maximum with source and expiry. The maximum
+   must cover provider-managed routing and failed-attempt charges. `cfbk` supplies
+   the configured/cost order and whole-cascade budget, then a move-only permit.
+4. `begin_with_fallback` performs the cascade and conservatively retains each
+   attempt's maximum exposure. Only a transport-proven `NotDispatched` result
+   permits fallback. Pending, uncertain, rejected and successful results stop it.
+5. A pending session remains in RAM. `prepare_check` binds one supplied code to its
+   exact provider session and context; it cannot accept an arbitrary member SID.
+   Checks also require cost authorization. No automatic resending or retries.
+6. An approved authenticated response must match account, service, destination,
+   supported channel and session. The result carries only the scoped keyed
+   comparison value, context binding and caller validity cap by default.
+7. Explicit rich output returns all response bytes, including unknown extensions,
+   in a redacted, non-serializable RAM wrapper. Provider fields are distinguishable
+   from the verified domain fact. Only requested rich output retains the address.
+8. `Verified::reserve` calls the host's atomic registration port with the opaque
+   identity, stable registration ID, caller-defined window and nonzero limit.
+   The host must reject conflicting ID reuse and implement cross-process atomicity;
+   an in-memory fixture is not a production database or a uniqueness guarantee.
 
-A send error can be an unknown outcome, not proof that nothing was delivered.
-The caller must reconcile it before any further side effect. Independent-provider
-opaque admission, recycling policy and production adapters remain host concerns.
+The transport is a trusted application boundary. It must authenticate HTTPS,
+limit responses and timeouts, disable redirects/retries and avoid payload logging
+or caching. A member-controlled transport cannot supply verification evidence.
+The adapter bounds parsed responses to 64 KiB and emits uniform errors.
 
-Native and actual wasm vectors exercise all channels, real OTP hashing/comparison,
-HMAC identity vectors, canonical delivery, expiry, exhaustion, one-use success,
-provider decline and transport uncertainty. An in-memory out-of-band mailbox tests
-only the external provider boundary; no live carrier validation is claimed.
-No provider calls, spending or personal phone fixtures are used in CI.
+There is no direct database connection or persistent session journal. The caller
+owns operation identity and pending cost exposure across restarts. Losing RAM
+state does not authorize resending: an uncertain effect remains uncertain.
+Expired verified facts cannot reserve registrations. Host policy checks validity
+when consuming returned facts and supplies fresh, correctly bound operation IDs.
+
+See [integration and cost notes](PROVIDERS.md) for actual capabilities and limits.

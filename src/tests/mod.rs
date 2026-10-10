@@ -1,269 +1,579 @@
 use super::*;
-use std::cell::{Cell, RefCell};
-
-// An out-of-band mailbox exercises the provider boundary; it does not verify codes.
-#[derive(Default)]
-struct Mailbox(RefCell<Vec<(Channel, String, String)>>);
-impl ChannelSender for Mailbox {
-    fn send(&self, channel: Channel, e164: &str, code: &str) -> Result<(), Error> {
-        self.0
-            .borrow_mut()
-            .push((channel, e164.into(), code.into()));
-        Ok(())
-    }
+use futures::executor::block_on;
+use std::{
+    cell::RefCell,
+    collections::{HashMap, VecDeque},
+    num::NonZeroU32,
+    sync::Mutex,
+};
+const DEST: &str = "+12025550123";
+const CHANNEL: Channel = Channel::Sms;
+fn account() -> String {
+    format!("AC{}", "0".repeat(32))
 }
-
-fn limits() -> VerificationLimits {
-    VerificationLimits {
-        code_lifetime_secs: 300,
-        max_attempts: 3,
-    }
+fn service() -> String {
+    format!("VA{}", "0".repeat(32))
 }
-
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-#[cfg_attr(not(target_arch = "wasm32"), test)]
-fn e164_normalize() {
-    assert_eq!(
-        normalize_e164("+1 555 555 0100"),
-        Some("+15555550100".to_owned())
-    );
-    assert_eq!(normalize_e164("49170"), None);
-    assert_eq!(normalize_e164("+49"), None);
+fn session() -> String {
+    format!("VE{}", "0".repeat(32))
 }
-
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-#[cfg_attr(not(target_arch = "wasm32"), test)]
-fn dedup_is_community_scoped() {
-    let a = dedup_handle(b"s", "alpha", "+15555550100");
-    let b = dedup_handle(b"s", "beta", "+15555550100");
-    assert_ne!(a, b);
-    assert_eq!(a.len(), 64);
-}
-
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-#[cfg_attr(not(target_arch = "wasm32"), test)]
-fn otp_roundtrip_and_expiry() {
-    let policy = limits();
-    let mut p = begin(
-        &Mailbox::default(),
-        &policy,
-        "+15555550100",
-        Channel::Sms,
-        "482916",
-        1000,
+fn adapter() -> Twilio {
+    Twilio::new(
+        account(),
+        service(),
+        Private::new(b"dummy-secret".to_vec()),
+        cost::Mode::Production,
     )
-    .expect("begin");
-    assert!(check(&mut p, "482916", 1001).is_ok());
-    let mut q = begin(
-        &Mailbox::default(),
-        &policy,
-        "+15555550100",
-        Channel::Sms,
-        "111111",
-        1000,
-    )
-    .expect("begin");
-    assert_eq!(check(&mut q, "000000", 1001), Err(Error::Rejected));
-    assert_eq!(check(&mut q, "111111", 2000), Err(Error::Rejected));
+    .unwrap()
 }
-
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-#[cfg_attr(not(target_arch = "wasm32"), test)]
-fn code_shape_and_attempt_budget_refuse_without_weakening_the_deadline() {
-    let policy = VerificationLimits {
-        max_attempts: 2,
-        ..limits()
-    };
-    assert!(matches!(
-        begin(
-            &Mailbox::default(),
-            &policy,
-            "invalid",
-            Channel::Sms,
-            "1234",
-            0
-        ),
-        Err(Error::InvalidPhone)
-    ));
-    for code in ["123", "12345678901", "123a", "１２３４"] {
-        assert!(matches!(
-            begin(
-                &Mailbox::default(),
-                &policy,
-                "+15555550100",
-                Channel::Sms,
-                code,
-                0
-            ),
-            Err(Error::Rejected)
-        ));
-    }
-    for code in ["1234", "1234567890"] {
-        let mut pending = begin(
-            &Mailbox::default(),
-            &policy,
-            "+15555550100",
-            Channel::Sms,
-            code,
-            100,
-        )
-        .unwrap();
-        assert_eq!(check(&mut pending, "wrong", 100), Err(Error::Rejected));
-        assert_eq!(pending.attempts_left, 1);
-        assert_eq!(check(&mut pending, code, 100), Ok(()));
-        assert_eq!(pending.attempts_left, 0);
-        assert_eq!(check(&mut pending, code, 100), Err(Error::Rejected));
-    }
-    let mut pending = begin(
-        &Mailbox::default(),
-        &policy,
-        "+15555550100",
-        Channel::Sms,
-        "1234",
-        u64::MAX - 1,
-    )
-    .unwrap();
-    assert_eq!(pending.expires_at, u64::MAX);
-    assert_eq!(check(&mut pending, "1234", u64::MAX), Err(Error::Rejected));
-    assert_eq!(pending.attempts_left, 2);
-}
-
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-#[cfg_attr(not(target_arch = "wasm32"), test)]
-fn canonical_phone_and_public_attestation_boundaries() {
-    assert_eq!(
-        normalize_e164(" +1 (555) 555-0100 "),
-        Some("+15555550100".into())
-    );
-    assert!(normalize_e164("+1234567").is_some());
-    assert!(normalize_e164("+123456789012345").is_some());
-    assert!(normalize_e164("+1234567890123456").is_none());
-    assert!(normalize_e164("+1234abc").is_none());
-    let bytes = attestation_bytes("opaque-handle", "policy", 123);
-    let fields: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(
-        fields,
-        serde_json::json!(["cphn.attestation.v1", "opaque-handle", "policy", 123])
-    );
-    assert_ne!(bytes, attestation_bytes("other-handle", "policy", 123));
-    assert_ne!(
-        bytes,
-        attestation_bytes("opaque-handle", "other-policy", 123)
-    );
-    assert_ne!(bytes, attestation_bytes("opaque-handle", "policy", 124));
-    for error in [
-        Error::InvalidPhone,
-        Error::Rejected,
-        Error::Declined,
-        Error::Transport,
-    ] {
-        assert!(!error.to_string().is_empty());
+fn context() -> Context {
+    Context {
+        binding: [1; 32],
+        scope: b"scope".to_vec(),
+        identity_key: zeroize::Zeroizing::new([2; 32]),
+        expires_at: 300,
+        include_upstream: false,
     }
 }
-
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-#[cfg_attr(not(target_arch = "wasm32"), test)]
-fn fixed_dedup_vector_survives_crypto_dependency_updates() {
-    assert_eq!(
-        dedup_handle(b"fixture-secret", "fixture", "+15555550100"),
-        "4456eb7087301dbb6035295daa3d398869b422083b3ff560846b3b3dce55815c"
-    );
+fn prepared() -> Prepared {
+    adapter()
+        .prepare_begin(DEST, CHANNEL, context(), 100)
+        .unwrap()
 }
-
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-#[cfg_attr(not(target_arch = "wasm32"), test)]
-fn each_selected_channel_sends_once_and_a_success_consumes_the_code() {
-    for channel in [Channel::Whatsapp, Channel::FlashCall, Channel::Sms] {
-        let mailbox = Mailbox::default();
-        let mut pending = begin(
-            &mailbox,
-            &limits(),
-            " +1 (555) 555-0100 ",
-            channel,
-            "482916",
-            100,
-        )
-        .unwrap();
-        let delivered = mailbox.0.borrow();
-        assert_eq!(delivered.len(), 1);
-        assert_eq!(
-            delivered[0],
-            (channel, "+15555550100".into(), "482916".into())
-        );
-        assert_eq!(pending.channel, channel);
-        assert_eq!(check(&mut pending, &delivered[0].2, 101), Ok(()));
-        assert_eq!(
-            check(&mut pending, &delivered[0].2, 102),
-            Err(Error::Rejected)
-        );
-    }
-}
-
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-#[cfg_attr(not(target_arch = "wasm32"), test)]
-fn invalid_limits_and_inputs_never_send() {
-    let mailbox = Mailbox::default();
-    for policy in [
-        VerificationLimits {
-            code_lifetime_secs: 0,
-            max_attempts: 1,
+fn money(atoms: u64) -> cost::Amount {
+    cost::Amount {
+        unit: cost::Unit {
+            code: "USD".into(),
+            scale: 2,
         },
-        VerificationLimits {
-            code_lifetime_secs: 1,
-            max_attempts: 0,
-        },
-    ] {
-        assert!(matches!(
-            begin(&mailbox, &policy, "+15555550100", Channel::Sms, "1234", 0),
-            Err(Error::Rejected)
-        ));
+        atoms,
     }
-    assert!(matches!(
-        begin(&mailbox, &limits(), "invalid", Channel::Sms, "1234", 0),
-        Err(Error::InvalidPhone)
-    ));
-    assert!(matches!(
-        begin(&mailbox, &limits(), "+15555550100", Channel::Sms, "bad", 0),
-        Err(Error::Rejected)
-    ));
-    assert!(mailbox.0.borrow().is_empty());
 }
-
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-#[cfg_attr(not(target_arch = "wasm32"), test)]
-fn provider_decline_and_uncertain_delivery_never_retry_or_switch() {
-    struct Refusal<'a>(&'a Cell<u32>, bool);
-    impl ChannelSender for Refusal<'_> {
-        fn send(&self, channel: Channel, _e164: &str, _code: &str) -> Result<(), Error> {
-            assert_eq!(channel, Channel::FlashCall);
-            self.0.set(self.0.get() + 1);
-            Err(if self.1 {
-                Error::Declined
-            } else {
-                Error::Transport
-            })
+fn permit(p: &Prepared, mode: cost::Mode, expiry: u64) -> cost::DispatchPermit<usize> {
+    cost::Plan::new(
+        vec![cost::Offer {
+            candidate: cfbk::Candidate::new(0, ["control"]),
+            quote: cost::Quote {
+                price: cost::Price::AtMost(money(10)),
+                source: "fixture-tariff".into(),
+                valid_until: expiry,
+                binding: p.binding().into(),
+            },
+        }],
+        cfbk::Config::new([0], ["control"]),
+        cost::CostOrder::Configured,
+        money(10),
+        1,
+        mode,
+        100,
+    )
+    .unwrap()
+    .start()
+    .begin(100)
+    .unwrap()
+}
+fn reply(status: &str) -> serde_json::Value {
+    serde_json::json!({"sid":session(),"account_sid":account(),"service_sid":service(),"to":DEST,"channel":CHANNEL.as_str(),"status":status,"valid":status=="approved","extension":{"complete":"upstream"}})
+}
+fn response(v: serde_json::Value) -> http::Response<Private> {
+    http::Response::new(Private::new(serde_json::to_vec(&v).unwrap()))
+}
+struct Wire {
+    results: RefCell<VecDeque<Result<http::Response<Private>, Error>>>,
+    requests: RefCell<Vec<http::Request<Private>>>,
+    mode: cost::Mode,
+}
+impl Wire {
+    fn new(results: Vec<Result<http::Response<Private>, Error>>) -> Self {
+        Self {
+            results: RefCell::new(results.into()),
+            requests: RefCell::new(vec![]),
+            mode: cost::Mode::Production,
         }
     }
-    for declined in [true, false] {
-        let calls = Cell::new(0);
-        let sender = Refusal(&calls, declined);
-        let error = begin(
-            &sender,
-            &limits(),
-            "+15555550100",
-            Channel::FlashCall,
-            "482916",
+}
+impl Transport for Wire {
+    fn mode(&self) -> cost::Mode {
+        self.mode
+    }
+    async fn send(
+        &self,
+        request: http::Request<Private>,
+    ) -> Result<http::Response<Private>, Error> {
+        self.requests.borrow_mut().push(request);
+        self.results.borrow_mut().pop_front().unwrap()
+    }
+}
+fn pending(rich: bool) -> Pending {
+    let mut c = context();
+    c.include_upstream = rich;
+    let p = adapter().prepare_begin(DEST, CHANNEL, c, 100).unwrap();
+    let permit = permit(&p, cost::Mode::Production, 200);
+    match block_on(p.dispatch(
+        &Wire::new(vec![Ok(response(reply("pending")))]),
+        permit,
+        100,
+    ))
+    .unwrap()
+    {
+        Step::Pending(p) => p,
+        _ => panic!("must be pending"),
+    }
+}
+fn verified(rich: bool) -> Verified {
+    let p = adapter()
+        .prepare_check(pending(rich), "123456", 101)
+        .unwrap();
+    let permit = permit(&p, cost::Mode::Production, 200);
+    match block_on(p.dispatch(
+        &Wire::new(vec![Ok(response(reply("approved")))]),
+        permit,
+        101,
+    ))
+    .unwrap()
+    {
+        Step::Verified(p) => p,
+        _ => panic!("must be verified"),
+    }
+}
+
+#[test]
+fn actual_twilio_wire_is_correlated_and_only_requested_rich_data_survives() {
+    let p = prepared();
+    let permit = permit(&p, cost::Mode::Production, 200);
+    let wire = Wire::new(vec![Ok(response(reply("pending")))]);
+    let step = block_on(p.dispatch(&wire, permit, 100)).unwrap();
+    let Step::Pending(pending) = step else {
+        panic!("pending")
+    };
+    assert!(!format!("{pending:?}").contains(DEST));
+    let requests = wire.requests.borrow();
+    let request = &requests[0];
+    assert_eq!(request.method(), "POST");
+    assert_eq!(request.uri().host(), Some("verify.twilio.com"));
+    assert!(request.uri().path().ends_with("/Verifications"));
+    assert!(request.headers()[http::header::AUTHORIZATION].is_sensitive());
+    let form: HashMap<_, _> = url::form_urlencoded::parse(request.body().expose())
+        .into_owned()
+        .collect();
+    assert_eq!(form["To"], DEST);
+    assert_eq!(form["Channel"], CHANNEL.as_str());
+    let p = adapter().prepare_check(pending, "123456", 101).unwrap();
+    let permit = permit(&p, cost::Mode::Production, 200);
+    let wire = Wire::new(vec![Ok(response(reply("approved")))]);
+    let Step::Verified(v) = block_on(p.dispatch(&wire, permit, 101)).unwrap() else {
+        panic!("verified")
+    };
+    assert!(
+        wire.requests.borrow()[0]
+            .uri()
+            .path()
+            .ends_with("/VerificationCheck")
+    );
+    let form: HashMap<_, _> =
+        url::form_urlencoded::parse(wire.requests.borrow()[0].body().expose())
+            .into_owned()
+            .collect();
+    assert_eq!(form["VerificationSid"], session());
+    assert_eq!(form["Code"], "123456");
+    assert!(!form.contains_key("To"));
+    assert_eq!(v.binding(), &[1; 32]);
+    assert_eq!(v.expires_at(), 300);
+    assert!(v.upstream().is_none());
+    assert!(!format!("{v:?}").contains(DEST));
+    let rich = verified(true);
+    assert_eq!(rich.identity(), v.identity());
+    let value: serde_json::Value =
+        serde_json::from_slice(rich.upstream().unwrap().expose()).unwrap();
+    assert_eq!(value["extension"]["complete"], "upstream");
+    assert_eq!(value["to"], DEST);
+    assert!(!format!("{rich:?}").contains(DEST));
+}
+
+#[test]
+fn authentication_response_and_session_mismatches_never_create_a_fact() {
+    for (field, value) in [
+        ("account_sid", serde_json::json!("wrong")),
+        ("service_sid", serde_json::json!("wrong")),
+        ("to", serde_json::json!("wrong")),
+        ("channel", serde_json::json!("unsupported")),
+        ("sid", serde_json::json!("invalid")),
+        ("sid", serde_json::json!(format!("VE{}", "1".repeat(32)))),
+        ("status", serde_json::json!("rejected")),
+        ("valid", serde_json::json!(false)),
+    ] {
+        let mut r = reply("approved");
+        r[field] = value;
+        let p = adapter()
+            .prepare_check(pending(false), "123456", 101)
+            .unwrap();
+        let permit = permit(&p, cost::Mode::Production, 200);
+        assert_eq!(
+            block_on(p.dispatch(&Wire::new(vec![Ok(response(r))]), permit, 101)).unwrap_err(),
+            Error::Refused
+        );
+    }
+    let p = prepared();
+    let permit = permit(&p, cost::Mode::Production, 200);
+    assert_eq!(
+        block_on(p.dispatch(
+            &Wire::new(vec![Ok(response(reply("approved")))]),
+            permit,
+            101
+        ))
+        .unwrap_err(),
+        Error::Refused
+    );
+    let p = adapter()
+        .prepare_check(pending(false), "123456", 101)
+        .unwrap();
+    let permit = permit(&p, cost::Mode::Production, 200);
+    assert!(matches!(
+        block_on(p.dispatch(
+            &Wire::new(vec![Ok(response(reply("pending")))]),
+            permit,
+            101
+        )),
+        Ok(Step::Pending(_))
+    ));
+}
+
+#[test]
+fn malformed_responses_and_possible_effects_fail_closed_without_retry() {
+    for result in [
+        Ok(http::Response::builder()
+            .status(500)
+            .body(Private::new(vec![]))
+            .unwrap()),
+        Ok(http::Response::new(Private::new(vec![b'x'; 65537]))),
+        Ok(http::Response::new(Private::new(b"malformed".to_vec()))),
+        Err(Error::Uncertain),
+        Err(Error::NotDispatched),
+    ] {
+        let p = prepared();
+        let permit = permit(&p, cost::Mode::Production, 200);
+        let wire = Wire::new(vec![result]);
+        assert!(block_on(p.dispatch(&wire, permit, 101)).is_err());
+        assert_eq!(wire.requests.borrow().len(), 1);
+    }
+}
+
+#[test]
+fn credentials_inputs_scope_time_and_modes_are_validated_before_transport() {
+    for (a, s, secret, mode) in [
+        (
+            "invalid".into(),
+            service(),
+            b"secret".to_vec(),
+            cost::Mode::Production,
+        ),
+        (
+            account(),
+            "invalid".into(),
+            b"secret".to_vec(),
+            cost::Mode::Production,
+        ),
+        (account(), service(), vec![], cost::Mode::Production),
+        (
+            account(),
+            service(),
+            b"secret".to_vec(),
+            cost::Mode::Sandbox,
+        ),
+        (
+            account(),
+            service(),
+            b"secret".to_vec(),
+            cost::Mode::Simulation,
+        ),
+        (
+            format!("AC{}", "z".repeat(32)),
+            service(),
+            b"secret".to_vec(),
+            cost::Mode::Production,
+        ),
+    ] {
+        assert!(Twilio::new(a, s, Private::new(secret), mode).is_err());
+    }
+    assert!(
+        adapter()
+            .prepare_begin("invalid", CHANNEL, context(), 100)
+            .is_err()
+    );
+    let mut c = context();
+    c.scope.clear();
+    assert!(adapter().prepare_begin(DEST, CHANNEL, c, 100).is_err());
+    assert!(
+        adapter()
+            .prepare_begin(DEST, CHANNEL, context(), 300)
+            .is_err()
+    );
+    let invalid = Twilio::new(
+        account(),
+        service(),
+        Private::new(vec![255]),
+        cost::Mode::Production,
+    )
+    .unwrap();
+    assert!(
+        invalid
+            .prepare_begin(DEST, CHANNEL, context(), 100)
+            .is_err()
+    );
+    for code in ["123", "12345678901", "123x"] {
+        assert!(adapter().prepare_check(pending(false), code, 101).is_err());
+    }
+    let other = Twilio::new(
+        format!("AC{}", "1".repeat(32)),
+        service(),
+        Private::new(b"secret".to_vec()),
+        cost::Mode::Production,
+    )
+    .unwrap();
+    assert!(other.prepare_check(pending(false), "123456", 101).is_err());
+    let other = Twilio::new(
+        account(),
+        format!("VA{}", "1".repeat(32)),
+        Private::new(b"secret".to_vec()),
+        cost::Mode::Production,
+    )
+    .unwrap();
+    assert!(other.prepare_check(pending(false), "123456", 101).is_err());
+    for mode in [cost::Mode::Simulation, cost::Mode::Sandbox] {
+        let p = prepared();
+        let permit = permit(&p, mode, 200);
+        let wire = Wire::new(vec![]);
+        assert_eq!(
+            block_on(p.dispatch(&wire, permit, 101)).unwrap_err(),
+            Error::Budget
+        );
+        assert!(wire.requests.borrow().is_empty());
+        let p = prepared();
+        let permit = permit(&p, cost::Mode::Production, 200);
+        let mut wire = Wire::new(vec![]);
+        wire.mode = mode;
+        assert_eq!(
+            block_on(p.dispatch(&wire, permit, 101)).unwrap_err(),
+            Error::Configuration
+        );
+    }
+    for expired in [200, 300] {
+        let p = prepared();
+        let permit = permit(
+            &p,
+            cost::Mode::Production,
+            if expired == 200 { 200 } else { 400 },
+        );
+        assert!(block_on(p.dispatch(&Wire::new(vec![]), permit, expired)).is_err());
+    }
+    let p = prepared();
+    let wrong = adapter()
+        .prepare_begin(
+            DEST,
+            CHANNEL,
+            Context {
+                binding: [9; 32],
+                ..context()
+            },
             100,
         )
-        .unwrap_err();
-        assert_eq!(
-            error,
-            if declined {
-                Error::Declined
-            } else {
-                Error::Transport
-            }
-        );
-        assert_eq!(calls.get(), 1);
+        .unwrap();
+    let permit = permit(&wrong, cost::Mode::Production, 200);
+    assert_eq!(
+        block_on(p.dispatch(&Wire::new(vec![]), permit, 101)).unwrap_err(),
+        Error::Budget
+    );
+    for error in [
+        Error::Input,
+        Error::Configuration,
+        Error::Refused,
+        Error::NotDispatched,
+        Error::Uncertain,
+        Error::Budget,
+    ] {
+        assert!(!error.to_string().contains(DEST));
+    }
+}
+
+fn attempt(amount: u64) -> Attempt {
+    Attempt {
+        prepared: prepared(),
+        price: cost::Price::AtMost(money(amount)),
+        source: "fixture-tariff".into(),
+        quote_valid_until: 200,
+    }
+}
+#[test]
+fn configured_and_cost_order_cascades_reserve_failed_costs_and_stop_on_pending() {
+    let wire = Wire::new(vec![
+        Err(Error::NotDispatched),
+        Ok(response(reply("pending"))),
+    ]);
+    let run = block_on(begin_with_fallback(
+        vec![attempt(10), attempt(20)],
+        &wire,
+        cost::CostOrder::Configured,
+        money(30),
+        2,
+        100,
+    ))
+    .unwrap();
+    assert!(matches!(run.result, Ok(Step::Pending(_))));
+    assert_eq!(run.attempts, 2);
+    assert_eq!(run.exposure.atoms, 30);
+    let run = block_on(begin_with_fallback(
+        vec![attempt(20), attempt(10)],
+        &Wire::new(vec![Ok(response(reply("pending")))]),
+        cost::CostOrder::Cheapest,
+        money(30),
+        2,
+        100,
+    ))
+    .unwrap();
+    assert_eq!(run.exposure.atoms, 10);
+    assert_eq!(run.attempts, 1);
+    assert!(format!("{run:?}").contains("Run"));
+    for e in [Error::Uncertain, Error::Refused] {
+        let run = block_on(begin_with_fallback(
+            vec![attempt(10), attempt(20)],
+            &Wire::new(vec![Err(e)]),
+            cost::CostOrder::Configured,
+            money(30),
+            2,
+            100,
+        ))
+        .unwrap();
+        assert_eq!(run.attempts, 1);
+        assert_eq!(run.exposure.atoms, 10);
+    }
+    let run = block_on(begin_with_fallback(
+        vec![attempt(10)],
+        &Wire::new(vec![Err(Error::NotDispatched)]),
+        cost::CostOrder::Configured,
+        money(10),
+        1,
+        100,
+    ))
+    .unwrap();
+    assert_eq!(run.result.unwrap_err(), Error::Budget);
+    let mut unknown = attempt(10);
+    unknown.price = cost::Price::Unknown;
+    assert!(
+        block_on(begin_with_fallback(
+            vec![unknown],
+            &Wire::new(vec![]),
+            cost::CostOrder::Configured,
+            money(10),
+            1,
+            100
+        ))
+        .is_err()
+    );
+    let checked = adapter()
+        .prepare_check(pending(false), "123456", 101)
+        .unwrap();
+    let run = block_on(begin_with_fallback(
+        vec![Attempt {
+            prepared: checked,
+            ..attempt(10)
+        }],
+        &Wire::new(vec![Ok(response(reply("approved")))]),
+        cost::CostOrder::Configured,
+        money(10),
+        1,
+        101,
+    ))
+    .unwrap();
+    assert!(matches!(run.result, Ok(Step::Verified(_))));
+}
+
+type Registrations = HashMap<(Identity, Vec<u8>), Vec<Vec<u8>>>;
+#[derive(Default)]
+struct State(Mutex<Registrations>);
+impl RegistrationState for State {
+    fn reserve(&self, identity: &Identity, r: Registration<'_>) -> Result<Reservation, StateError> {
+        let mut state = self.0.lock().unwrap();
+        let entries = state
+            .entry((identity.clone(), r.window.to_vec()))
+            .or_default();
+        if entries.iter().any(|id| id == r.id) {
+            return Ok(Reservation::AlreadyReserved);
+        }
+        if entries.len() >= r.limit.get() as usize {
+            return Ok(Reservation::LimitReached);
+        }
+        entries.push(r.id.to_vec());
+        Ok(Reservation::Reserved)
+    }
+}
+#[test]
+fn caller_state_enforces_general_limits_and_idempotency_without_a_library_database() {
+    let v = verified(false);
+    let state = State::default();
+    let r = Registration {
+        id: b"first",
+        window: b"caller-window",
+        limit: NonZeroU32::new(2).unwrap(),
+    };
+    assert_eq!(v.reserve(&state, r, 101), Ok(Reservation::Reserved));
+    assert_eq!(v.reserve(&state, r, 101), Ok(Reservation::AlreadyReserved));
+    assert_eq!(
+        v.reserve(&state, Registration { id: b"second", ..r }, 101),
+        Ok(Reservation::Reserved)
+    );
+    assert_eq!(
+        v.reserve(&state, Registration { id: b"third", ..r }, 101),
+        Ok(Reservation::LimitReached)
+    );
+    assert_eq!(
+        v.reserve(
+            &state,
+            Registration {
+                window: b"different-window",
+                ..r
+            },
+            101
+        ),
+        Ok(Reservation::Reserved)
+    );
+    assert_eq!(v.reserve(&state, r, 300), Err(StateError));
+    struct Down;
+    impl RegistrationState for Down {
+        fn reserve(&self, _: &Identity, _: Registration<'_>) -> Result<Reservation, StateError> {
+            Err(StateError)
+        }
+    }
+    assert_eq!(v.reserve(&Down, r, 101), Err(StateError));
+    assert!(!StateError.to_string().is_empty());
+    assert!(format!("{r:?}").contains("Registration"));
+    assert_ne!(
+        Identity::derive(&[2; 32], b"scope", "domain", "id"),
+        Identity::derive(&[2; 32], b"other", "domain", "id")
+    );
+}
+
+#[test]
+fn maintained_phone_metadata_and_all_channels_are_exercised() {
+    assert_eq!(normalize("+1 (202) 555-0123").unwrap(), DEST);
+    for invalid in ["invalid", "+1", "+12025550123 ext 1"] {
+        assert!(normalize(invalid).is_err());
+    }
+    for (channel, wire) in [
+        (Channel::Sms, "sms"),
+        (Channel::Sms, "rcs"),
+        (Channel::Whatsapp, "whatsapp"),
+        (Channel::Whatsapp, "sms"),
+        (Channel::Call, "call"),
+    ] {
+        let p = adapter()
+            .prepare_begin(DEST, channel, context(), 100)
+            .unwrap();
+        let permit = permit(&p, cost::Mode::Production, 200);
+        let mut r = reply("pending");
+        r["channel"] = serde_json::json!(wire);
+        assert!(matches!(
+            block_on(p.dispatch(&Wire::new(vec![Ok(response(r))]), permit, 101)),
+            Ok(Step::Pending(_))
+        ));
     }
 }

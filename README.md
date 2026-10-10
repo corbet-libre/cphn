@@ -1,26 +1,18 @@
 # cphn
 
-**One phone possession check through one selected provider and channel.**
+Reusable phone verification, opaque comparison identities and caller-defined
+registration limits. `cvld` is one consumer; explicit callers can request complete
+upstream responses in RAM. The library has no database connection.
 
-## Scope
+The first concrete adapter implements Twilio Verify SMS/RCS, WhatsApp with possible SMS fallback, and voice. Maintained
+libraries normalize identifiers and construct authenticated requests. Shared
+`cfbk` plans caller-selected provider/channel cascades under explicit cost bounds;
+unknown costs cannot authorize dispatch. Independent provider checks establish
+control, never one-human uniqueness.
 
-`cphn` normalizes E.164 input, sends one host-generated code through a provider
-port, checks possession, derives a community-scoped keyed fingerprint and binds
-an attestation payload. The host supplies provider credentials, a CSPRNG, clock
-and verification limits. Only a code hash remains in pending state. Phone
-possession is not evidence that a person is unique.
-
-Provider/channel ordering, fallback and minimum standards belong to `cfbk`,
-configured through `crbk` settings. This leaf has no ordering, cost estimates,
-provider probing or retry loop. Each `begin` sends at most once; provider refusal
-or uncertain delivery is returned unchanged. A successful code check consumes
-its attempt budget, so replay cannot succeed.
-
-`VerificationLimits` contains only explicit validity and submission bounds; it
-has no policy defaults. `ChannelSender` represents the one provider selected by
-the caller. The host must sign attestation bytes only after a successful check
-and must bind the normalized phone's fingerprint to that check. No live provider
-integration is supplied or certified here. See [the contract](docs/CONTRACT.md).
+See [the contract](docs/CONTRACT.md) and [provider, credential and cost notes](docs/PROVIDERS.md).
+Live provider flows remain unexecuted; remote checks and independent review are
+required before qualification.
 
 ## License
 
