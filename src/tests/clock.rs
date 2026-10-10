@@ -314,3 +314,80 @@ fn rollback_before_reservation_or_dispatch_never_reaches_transport() {
     );
     assert_eq!(clock.get(), 99);
 }
+
+struct BlockingRegistration {
+    clock: std::sync::atomic::AtomicU64,
+    completed: u64,
+    wait_before_commit: bool,
+    state: State,
+}
+impl BlockingRegistration {
+    fn wait_for_clock(&self) {
+        // Model a synchronous host callback blocked behind a queue/transaction.
+        let completed = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                self.clock
+                    .store(self.completed, std::sync::atomic::Ordering::SeqCst);
+                completed.wait();
+            });
+            completed.wait();
+        });
+    }
+}
+impl RegistrationState for BlockingRegistration {
+    fn reserve(
+        &self,
+        identity: &Identity,
+        registration: Registration<'_>,
+        valid_until: u64,
+    ) -> Result<Reservation, StateError> {
+        assert_eq!(valid_until, 300);
+        if self.wait_before_commit {
+            self.wait_for_clock();
+        }
+        if self.clock.load(std::sync::atomic::Ordering::SeqCst) >= valid_until {
+            return Err(StateError);
+        }
+        let result = self.state.reserve(identity, registration, valid_until)?;
+        self.wait_for_clock();
+        Ok(result)
+    }
+}
+#[test]
+fn synchronous_registration_checks_commit_and_completion_time() {
+    let verified = verified(true);
+    let registration = Registration {
+        id: b"stable-operation",
+        window: b"window",
+        limit: NonZeroU32::new(2).unwrap(),
+    };
+    for (completed, wait_before_commit) in
+        [(300, true), (300, false), (100 - 1, false), (100, false)]
+    {
+        let store = BlockingRegistration {
+            clock: std::sync::atomic::AtomicU64::new(100),
+            completed,
+            wait_before_commit,
+            state: State::default(),
+        };
+        let result = verified.reserve(&store, registration, &|| {
+            store.clock.load(std::sync::atomic::Ordering::SeqCst)
+        });
+        if completed == 100 {
+            assert_eq!(result, Ok(Reservation::Reserved));
+            assert_eq!(
+                verified.reserve(&store, registration, &|| store
+                    .clock
+                    .load(std::sync::atomic::Ordering::SeqCst)),
+                Ok(Reservation::AlreadyReserved)
+            );
+        } else {
+            assert_eq!(result, Err(StateError));
+        }
+        assert_eq!(
+            store.state.0.lock().unwrap().len(),
+            usize::from(!wait_before_commit)
+        );
+    }
+}

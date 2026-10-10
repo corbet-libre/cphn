@@ -543,7 +543,13 @@ type Registrations = HashMap<(Identity, Vec<u8>), Vec<Vec<u8>>>;
 #[derive(Default)]
 struct State(Mutex<Registrations>);
 impl RegistrationState for State {
-    fn reserve(&self, identity: &Identity, r: Registration<'_>) -> Result<Reservation, StateError> {
+    fn reserve(
+        &self,
+        identity: &Identity,
+        r: Registration<'_>,
+        valid_until: u64,
+    ) -> Result<Reservation, StateError> {
+        assert!(valid_until > 100);
         let mut state = self.0.lock().unwrap();
         let entries = state
             .entry((identity.clone(), r.window.to_vec()))
@@ -568,14 +574,17 @@ fn caller_state_enforces_general_limits_and_idempotency_without_a_library_databa
         window: b"caller-window",
         limit: NonZeroU32::new(2).unwrap(),
     };
-    assert_eq!(v.reserve(&state, r, 101), Ok(Reservation::Reserved));
-    assert_eq!(v.reserve(&state, r, 101), Ok(Reservation::AlreadyReserved));
+    assert_eq!(v.reserve(&state, r, &|| 101), Ok(Reservation::Reserved));
     assert_eq!(
-        v.reserve(&state, Registration { id: b"second", ..r }, 101),
+        v.reserve(&state, r, &|| 101),
+        Ok(Reservation::AlreadyReserved)
+    );
+    assert_eq!(
+        v.reserve(&state, Registration { id: b"second", ..r }, &|| 101),
         Ok(Reservation::Reserved)
     );
     assert_eq!(
-        v.reserve(&state, Registration { id: b"third", ..r }, 101),
+        v.reserve(&state, Registration { id: b"third", ..r }, &|| 101),
         Ok(Reservation::LimitReached)
     );
     assert_eq!(
@@ -585,18 +594,23 @@ fn caller_state_enforces_general_limits_and_idempotency_without_a_library_databa
                 window: b"different-window",
                 ..r
             },
-            101
+            &|| 101
         ),
         Ok(Reservation::Reserved)
     );
-    assert_eq!(v.reserve(&state, r, 300), Err(StateError));
+    assert_eq!(v.reserve(&state, r, &|| 300), Err(StateError));
     struct Down;
     impl RegistrationState for Down {
-        fn reserve(&self, _: &Identity, _: Registration<'_>) -> Result<Reservation, StateError> {
+        fn reserve(
+            &self,
+            _: &Identity,
+            _: Registration<'_>,
+            _: u64,
+        ) -> Result<Reservation, StateError> {
             Err(StateError)
         }
     }
-    assert_eq!(v.reserve(&Down, r, 101), Err(StateError));
+    assert_eq!(v.reserve(&Down, r, &|| 101), Err(StateError));
     assert!(!StateError.to_string().is_empty());
     assert!(format!("{r:?}").contains("Registration"));
     assert_ne!(
@@ -717,7 +731,7 @@ fn concurrent_registration_calls_use_the_atomic_host_port() {
                             window: b"window",
                             limit: NonZeroU32::new(2).unwrap(),
                         },
-                        101,
+                        &|| 101,
                     )
                     .unwrap()
                 })

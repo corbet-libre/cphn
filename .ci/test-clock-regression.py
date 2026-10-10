@@ -4,7 +4,7 @@ from pathlib import Path
 import re
 import subprocess
 
-CONTROLS = [('src/twilio.rs', 'deadlines_cover_reservation_reply_and_fallback_without_releasing_exposure', 'let completed = clock();', 'let completed = dispatched;'), ('src/adapters.rs', 'extension_completion_preserves_requested_private_reply_without_an_expired_fact', 'let completed = clock();', 'let completed = dispatched;')]
+CONTROLS = [('src/twilio.rs', 'deadlines_cover_reservation_reply_and_fallback_without_releasing_exposure', 'let completed = clock();', 'let completed = dispatched;'), ('src/adapters.rs', 'extension_completion_preserves_requested_private_reply_without_an_expired_fact', 'let completed = clock();', 'let completed = dispatched;'), ('src/lib.rs', 'synchronous_registration_checks_commit_and_completion_time', 'let completed = clock();', 'let completed = now;')]
 originals = {Path(path): Path(path).read_bytes() for path, _, _, _ in CONTROLS}
 try:
     for filename, name, before, after in CONTROLS:

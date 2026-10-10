@@ -60,9 +60,13 @@ pub trait RegistrationState {
     /// Atomically bind `(identity, window, id)` and enforce `limit`.
     /// Reject conflicting reuse of an id; retries must preserve its original binding.
     /// Distributed callers must implement this across processes, not count in RAM.
+    /// Check a fresh trusted clock against the exclusive `valid_until` inside the
+    /// atomic commit, including after synchronous lock/queue waits. Expiry must
+    /// leave state unchanged; a synchronous callback may still block.
     fn reserve(
         &self,
         identity: &Identity,
         registration: Registration<'_>,
+        valid_until: u64,
     ) -> Result<Reservation, StateError>;
 }

@@ -77,3 +77,10 @@ releases a cost reservation automatically.
 `include_upstream` also preserves an extension adapter's available private
 response on a completion/projection refusal through `Error::Reported`; its
 underlying error category stays explicit and diagnostics remain redacted.
+
+
+The synchronous `reserve` callback can block or queue, so it receives the proof's
+exclusive expiry and must check its fresh trusted clock inside the atomic commit.
+`reserve` also accepts an injected live clock and refuses expiry or rollback after
+the callback returns. A valid commit remains reserved if its response becomes too
+late; refusing a fresh success receipt does not undo or repeat that commit.

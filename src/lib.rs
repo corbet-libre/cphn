@@ -192,12 +192,18 @@ impl Verified {
         &self,
         state: &impl RegistrationState,
         registration: Registration<'_>,
-        now: u64,
+        clock: &impl Fn() -> u64,
     ) -> Result<Reservation, StateError> {
+        let now = clock();
         if now >= self.expires_at {
             return Err(StateError);
         }
-        state.reserve(&self.identity, registration)
+        let reservation = state.reserve(&self.identity, registration, self.expires_at)?;
+        let completed = clock();
+        if completed < now || completed >= self.expires_at {
+            return Err(StateError);
+        }
+        Ok(reservation)
     }
 }
 
