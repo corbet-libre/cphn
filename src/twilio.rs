@@ -165,6 +165,16 @@ impl Twilio {
     }
 }
 
+/// Explicit private dispatch report. A response can be malformed, refused or pending;
+/// only `result` can contain an authenticated domain value. No diagnostic Debug.
+pub struct DispatchReport {
+    /// The same authentication and projection result as the minimal dispatch API.
+    pub result: Result<Step, Error>,
+    /// Complete bounded HTTP reply, including status and headers, when available.
+    /// Explicit access only; headers and body may contain private provider data.
+    pub response: Option<http::Response<Private>>,
+}
+
 /// Inert prepared operation with a private request and a keyed, non-revealing quote binding.
 pub struct Prepared {
     request: http::Request<Private>,
@@ -184,6 +194,32 @@ impl Prepared {
         transport: &impl Transport,
         permit: cost::DispatchPermit<usize>,
         now: u64,
+    ) -> Result<Step, Error> {
+        self.dispatch_inner(state, transport, permit, now, None)
+            .await
+    }
+    /// Explicitly retain any bounded reply, including malformed, refused and pending
+    /// responses, without changing authentication or invoking the provider twice.
+    pub async fn dispatch_report(
+        self,
+        state: &impl DispatchState,
+        transport: &impl Transport,
+        permit: cost::DispatchPermit<usize>,
+        now: u64,
+    ) -> DispatchReport {
+        let mut response = None;
+        let result = self
+            .dispatch_inner(state, transport, permit, now, Some(&mut response))
+            .await;
+        DispatchReport { result, response }
+    }
+    async fn dispatch_inner(
+        self,
+        state: &impl DispatchState,
+        transport: &impl Transport,
+        permit: cost::DispatchPermit<usize>,
+        now: u64,
+        report: Option<&mut Option<http::Response<Private>>>,
     ) -> Result<Step, Error> {
         permit
             .validate(&self.binding, cost::Mode::Production, now)
@@ -206,6 +242,13 @@ impl Prepared {
         let response = transport.send(self.request).await?;
         if response.body().expose().len() > 65536 {
             return Err(Error::Uncertain);
+        }
+        if let Some(report) = report {
+            let mut copy = http::Response::new(Private::new(response.body().expose().to_vec()));
+            *copy.status_mut() = response.status();
+            *copy.headers_mut() = response.headers().clone();
+            *copy.version_mut() = response.version();
+            *report = Some(copy);
         }
         if !response.status().is_success() {
             return Err(Error::ProviderResponse {

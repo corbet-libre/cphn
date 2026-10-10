@@ -13,7 +13,7 @@ mod twilio;
 pub use cfbk::cost;
 pub use flow::{Attempt, Run, begin_with_fallback};
 pub use identity::{Identity, Registration, RegistrationState, Reservation, StateError};
-pub use twilio::{Channel, Prepared, Twilio};
+pub use twilio::{Channel, DispatchReport, Prepared, Twilio};
 use zeroize::Zeroizing;
 
 /// Private owned bytes: explicit access only; no automatic serialization or logging.

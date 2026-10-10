@@ -1101,3 +1101,43 @@ fn delayed_fallback_rechecks_expiry_at_the_host_reservation_edge() {
     assert_eq!(run.result.unwrap_err(), Error::Reservation);
     assert_eq!(wire.calls.get(), 1);
 }
+
+#[test]
+fn complete_report_preserves_bounded_pending_refused_and_malformed_responses() {
+    let mut wrong = reply("pending");
+    wrong["service_sid"] = serde_json::json!(format!("VA{}", "1".repeat(32)));
+    let cases = [
+        (200, serde_json::to_vec(&reply("pending")).unwrap(), true),
+        (200, serde_json::to_vec(&wrong).unwrap(), false),
+        (200, b"private-malformed-body".to_vec(), false),
+        (403, b"private-error-body".to_vec(), false),
+    ];
+    for (status, body, accepted) in cases {
+        let p = prepared();
+        let permit = get_permit(&p, cost::Mode::Production, 200);
+        let response = http::Response::builder()
+            .status(status)
+            .header("x-provider", "private-extension")
+            .body(Private::new(body.clone()))
+            .unwrap();
+        let wire = Wire::new(vec![Ok(response)]);
+        let report = block_on(p.dispatch_report(&Journal::default(), &wire, permit, 100));
+        assert_eq!(report.result.is_ok(), accepted);
+        let raw = report.response.unwrap();
+        assert_eq!(raw.status().as_u16(), status);
+        assert_eq!(raw.headers()["x-provider"], "private-extension");
+        assert_eq!(raw.body().expose(), body);
+        assert_eq!(wire.requests.borrow().len(), 1);
+    }
+    for result in [
+        Err(Error::Uncertain),
+        Ok(http::Response::new(Private::new(vec![0; 65537]))),
+    ] {
+        let p = prepared();
+        let permit = get_permit(&p, cost::Mode::Production, 200);
+        let report =
+            block_on(p.dispatch_report(&Journal::default(), &Wire::new(vec![result]), permit, 100));
+        assert!(report.result.is_err());
+        assert!(report.response.is_none());
+    }
+}

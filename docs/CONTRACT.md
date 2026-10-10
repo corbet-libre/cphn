@@ -57,3 +57,9 @@ The dispatch-state port receives the exclusive minimum of quote and ceremony
 expiry and must check its fresh host clock before returning authorization. A
 slow failed attempt cannot reuse the cascade's original planning timestamp to
 send an expired fallback. No implicit clock or database is introduced.
+
+`Prepared::dispatch_report` explicitly returns the complete bounded HTTP reply,
+including status, headers and extensions, even for pending, malformed or refused
+responses. Its `result` follows the same authentication path as minimal dispatch;
+raw reply access never constructs verified facts. Pre-dispatch/network failures
+have no response, and oversized replies are refused rather than retained.
