@@ -60,6 +60,7 @@ pub async fn verify_with<A: Adapter>(
             &context.operation,
             &binding,
             permit.quote().price.maximum().ok_or(Error::Budget)?,
+            permit.quote().valid_until.min(context.expires_at),
         )
         .map_err(|_| Error::Reservation)?;
     let evidence = adapter.authenticate(input, &context, permit, now).await?;

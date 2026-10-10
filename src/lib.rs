@@ -100,12 +100,14 @@ pub trait Transport {
 pub trait DispatchState {
     /// Atomically bind operation to ceremony/request and reserve its maximum
     /// against the host's shared ceremony budget. Only a new reservation succeeds.
+    /// Check the host's fresh clock against `valid_until` before returning success.
     fn reserve(
         &self,
         ceremony: &[u8; 32],
         operation: &[u8; 32],
         binding: &str,
         maximum: &cost::Amount,
+        valid_until: u64,
     ) -> Result<(), Error>;
 }
 

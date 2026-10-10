@@ -911,7 +911,11 @@ impl DispatchState for Journal {
         operation: &[u8; 32],
         binding: &str,
         maximum: &cost::Amount,
+        valid_until: u64,
     ) -> Result<(), Error> {
+        if valid_until <= 101 {
+            return Err(Error::Reservation);
+        }
         let mut state = self.inner.lock().unwrap();
         if state.0.contains_key(operation) || maximum.unit != money(0).unit {
             return Err(Error::Reservation);
@@ -1044,4 +1048,56 @@ fn upstream_http_failure_bytes_are_explicit_private_and_stop_fallback() {
     assert!(Error::Uncertain.upstream().is_none());
     assert_eq!(wire.requests.borrow().len(), 1);
     assert_eq!(run.exposure.atoms, 10);
+}
+
+#[test]
+fn delayed_fallback_rechecks_expiry_at_the_host_reservation_edge() {
+    struct Clock(std::cell::Cell<u64>);
+    impl DispatchState for Clock {
+        fn reserve(
+            &self,
+            _: &[u8; 32],
+            _: &[u8; 32],
+            _: &str,
+            _: &cost::Amount,
+            valid_until: u64,
+        ) -> Result<(), Error> {
+            if self.0.get() >= valid_until {
+                Err(Error::Reservation)
+            } else {
+                Ok(())
+            }
+        }
+    }
+    struct Delayed<'a> {
+        clock: &'a Clock,
+        calls: std::cell::Cell<usize>,
+    }
+    impl Transport for Delayed<'_> {
+        fn mode(&self) -> cost::Mode {
+            cost::Mode::Production
+        }
+        async fn send(&self, _: http::Request<Private>) -> Result<http::Response<Private>, Error> {
+            self.calls.set(self.calls.get() + 1);
+            self.clock.0.set(201);
+            Err(Error::NotDispatched)
+        }
+    }
+    let clock = Clock(std::cell::Cell::new(100));
+    let wire = Delayed {
+        clock: &clock,
+        calls: std::cell::Cell::new(0),
+    };
+    let run = block_on(begin_with_fallback(
+        &clock,
+        vec![attempt(10), attempt(20)],
+        &wire,
+        cost::CostOrder::Configured,
+        money(30),
+        2,
+        100,
+    ))
+    .unwrap();
+    assert_eq!(run.result.unwrap_err(), Error::Reservation);
+    assert_eq!(wire.calls.get(), 1);
 }

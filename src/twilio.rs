@@ -197,6 +197,10 @@ impl Prepared {
                 &self.pending.context.operation,
                 &self.binding,
                 permit.quote().price.maximum().ok_or(Error::Budget)?,
+                permit
+                    .quote()
+                    .valid_until
+                    .min(self.pending.context.expires_at),
             )
             .map_err(|_| Error::Reservation)?;
         let response = transport.send(self.request).await?;

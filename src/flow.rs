@@ -20,7 +20,7 @@ pub struct Run {
     pub result: Result<Step, Error>,
     /// Reserved upper-bound exposure, not a fabricated actual charge.
     pub exposure: cost::Amount,
-    /// Number of actual dispatch attempts.
+    /// Number of cost-authorized attempts, including pre-dispatch refusals.
     pub attempts: usize,
 }
 

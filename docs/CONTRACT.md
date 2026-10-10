@@ -52,3 +52,8 @@ Non-success HTTP responses retain their bounded exact body in `ProviderResponse`
 Default errors/Debug redact it; `Error::upstream` is explicit private RAM access.
 Provider error fields remain assertions, not authenticated verification facts.
 HTTP failure keeps charge/side-effect uncertainty and never triggers fallback.
+
+The dispatch-state port receives the exclusive minimum of quote and ceremony
+expiry and must check its fresh host clock before returning authorization. A
+slow failed attempt cannot reuse the cascade's original planning timestamp to
+send an expired fallback. No implicit clock or database is introduced.
