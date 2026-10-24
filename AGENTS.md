@@ -20,6 +20,6 @@ Write comments and documentation in English. Owned code forbids unsafe Rust.
 
 ## Quality boundary
 
-Workstations edit and format; Crow compiles, tests and enforces existing full
+Local checkouts edit and format; Crow compiles, tests and enforces existing full
 source coverage. Commit candidates before remote validation. Test owned behavior
 through real upstream libraries; report unexecuted live flows separately.
