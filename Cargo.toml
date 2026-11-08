@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.88"
 description = "Single-provider phone verification with opaque dedup and cvld attester binding"
 license = "LGPL-3.0-only WITH LGPL-3.0-linking-exception"
-repository = "https://git.corbet.ch/corbet-foss/cphn"
+repository = "https://git.corbet.ch/corbet-libre/cphn.git"
 readme = "README.md"
 include = ["Cargo.toml", "src/**", "README.md", "CHANGELOG.md", "LICENSE", "LICENSE.md", "LICENSES/LGPL-3.0-only.txt", "LICENSES/LGPL-3.0-linking-exception.txt", "LICENSES/GPL-3.0-only.txt"]
 
@@ -17,7 +17,7 @@ unsafe_code = "forbid"
 missing_docs = "warn"
 
 [dependencies]
-cfbk = { git = "https://git.corbet.ch/corbet-foss/cfbk", branch = "main" }
+cfbk = { git = "https://git.corbet.ch/corbet-libre/cfbk.git", branch = "main" }
 http = "1"
 url = "2"
 base64 = "0.23"
